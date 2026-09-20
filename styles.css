@@ -96,6 +96,7 @@
     background:var(--surface); border:1px solid var(--border-strong); border-radius:999px;
     padding:8px 10px 8px 16px; box-shadow:var(--shadow-2);
     font-size:13px; color:var(--ink); max-width:min(92vw, 640px);
+    user-select:none; -webkit-user-select:none;
   }
   .focus-bar[hidden]{ display:none; }
   #focus-bar-text{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -214,6 +215,7 @@
     background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1px);
     background-size: 22px 22px;
     touch-action:none;
+    user-select:none; -webkit-user-select:none;
   }
   #canvas-wrap.panning{ cursor:grabbing; }
   #canvas-world{ position:absolute; top:0; left:0; transform-origin:0 0; }
