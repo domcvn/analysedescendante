@@ -22,6 +22,9 @@
       <label class="btn" for="import-file-input">Importer</label>
       <input type="file" id="import-file-input" accept="application/json,.json" hidden>
       <span class="topbar-divider"></span>
+      <label class="seg-control" title="Épaisseur des flèches"><span class="label-desktop">Épaisseur </span><input type="range" min="0" max="10" step="0.1" value="2" data-action="arrow-width-range"/><input type="number" min="0" max="10" step="0.1" value="2" class="seg-number" data-action="arrow-width-number"/></label>
+      <label class="seg-control" title="Taille du texte"><span class="label-desktop">Texte </span><input type="range" min="0" max="20" step="0.1" value="1" data-action="text-scale-range"/><input type="number" min="0" max="20" step="0.1" value="1" class="seg-number" data-action="text-scale-number"/></label>
+      <span class="topbar-divider"></span>
       <button class="btn btn-ghost" data-action="reset-all">Tout effacer</button>
       <button class="btn" data-action="export-image">Image (PNG)</button>
       <button class="btn" data-action="export-pdf">PDF</button>

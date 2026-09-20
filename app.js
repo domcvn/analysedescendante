@@ -27,7 +27,9 @@
   var funcForm = null;
   var pendingLayout = false;
   var downloadsCapPromise = null;
-  var view = loadView() || { x:80, y:60, scale:1 };
+  var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1 };
+  if(typeof view.arrowWidth !== 'number') view.arrowWidth = 2;
+  if(typeof view.textScale !== 'number') view.textScale = 1;
 
   function uid(prefix){ return prefix + (state.nextId++); }
   function esc(s){
@@ -440,31 +442,71 @@
     return d;
   }
 
-  function routeConnector(s, t, sRect, tRect, obstacles){
+  function pathLength(points){
+    var len = 0;
+    for(var i=0;i<points.length-1;i++){
+      len += Math.abs(points[i][0]-points[i+1][0]) + Math.abs(points[i][1]-points[i+1][1]);
+    }
+    return len;
+  }
+
+  // boxObstacles (functions, their labels, units) must never be crossed. pathObstacles
+  // (other arrows already drawn) are avoided when possible, but not at the cost of a much
+  // longer detour — a brief crossing between two arrows reads far better than a convoluted
+  // path, so among everything that keeps clear of boxes we always pick the shortest route,
+  // preferring ones that also dodge other arrows only when that doesn't require the more
+  // complex candidates to win instead.
+  function routeConnector(s, t, sRect, tRect, boxObstacles, pathObstacles){
     var leg = 30;
     var clearance = Math.max(14, leg*0.7);
     var candidates = [];
 
     if(t.y >= s.y){
-      var mids = [ s.y + (t.y-s.y)/2, s.y + clearance, t.y - clearance ];
+      var span = t.y - s.y;
+      var mids = [
+        s.y + span/2, s.y + clearance, t.y - clearance,
+        s.y + span*0.25, s.y + span*0.75
+      ];
       mids.forEach(function(midY){
         if(midY < s.y || midY > t.y) return;
         candidates.push([ [s.x,s.y],[s.x,midY],[t.x,midY],[t.x,t.y] ]);
       });
     }
 
-    var belowY = s.y + leg;
-    var aboveY = t.y - leg;
-    var leftClear = Math.min(sRect.left, tRect.left) - clearance;
-    var rightClear = Math.max(sRect.left+sRect.width, tRect.left+tRect.width) + clearance;
-    [leftClear, rightClear].sort(function(a,b){ return Math.abs(s.x-a)-Math.abs(s.x-b); }).forEach(function(clearX){
-      candidates.push([ [s.x,s.y],[s.x,belowY],[clearX,belowY],[clearX,aboveY],[t.x,aboveY],[t.x,t.y] ]);
+    // Try several detour heights: if the row just below the source (or just above the
+    // target) happens to run straight through some other function, a taller/shorter
+    // detour may clear it instead of forcing a wider sideways swing.
+    [1, 1.8, 2.6].forEach(function(legMult){
+      var belowY = s.y + leg*legMult;
+      var aboveY = t.y - leg*legMult;
+
+      // The column used to rise from below the source to above the target must clear every
+      // obstacle that sits in that vertical band — not just the source and target boxes —
+      // otherwise the rise can still cut across some other function/label in between.
+      var bandTop = Math.min(belowY, aboveY), bandBottom = Math.max(belowY, aboveY);
+      var relevant = boxObstacles.filter(function(o){ return o.top < bandBottom && o.top+o.height > bandTop; });
+      var minLeft = Math.min(sRect.left, tRect.left);
+      var maxRight = Math.max(sRect.left+sRect.width, tRect.left+tRect.width);
+      relevant.forEach(function(o){
+        minLeft = Math.min(minLeft, o.left);
+        maxRight = Math.max(maxRight, o.left+o.width);
+      });
+
+      [1, 2.4].forEach(function(mult){
+        var cl = minLeft - clearance*mult, cr = maxRight + clearance*mult;
+        [cl, cr].sort(function(a,b){ return Math.abs(s.x-a)-Math.abs(s.x-b); }).forEach(function(clearX){
+          candidates.push([ [s.x,s.y],[s.x,belowY],[clearX,belowY],[clearX,aboveY],[t.x,aboveY],[t.x,t.y] ]);
+        });
+      });
     });
 
-    for(var i=0;i<candidates.length;i++){
-      if(!pathBlocked(candidates[i], obstacles)) return candidates[i];
-    }
-    return candidates[candidates.length-1];
+    var boxClear = candidates.filter(function(c){ return !pathBlocked(c, boxObstacles); });
+    var pool = boxClear.length ? boxClear : candidates;
+    var fullyClear = pool.filter(function(c){ return !pathBlocked(c, pathObstacles); });
+    if(fullyClear.length) pool = fullyClear;
+
+    pool = pool.slice().sort(function(a,b){ return pathLength(a) - pathLength(b); });
+    return pool[0];
   }
 
   function buildConnectorMarkup(rootEl, refEl){
@@ -476,8 +518,9 @@
     function bottomPoint(rect, offset){ return { x: rect.left+rect.width/2+offset, y: rect.top+rect.height }; }
     function topPoint(rect, offset){ return { x: rect.left+rect.width/2+offset, y: rect.top }; }
 
-    var allRects = {};
+    var allRects = {}; // anchor + obstacle rects: the box itself only (labels may be crossed)
     rootEl.querySelectorAll('[data-fid]').forEach(function(el){ allRects[el.dataset.fid] = relRect(el); });
+    var obstacleRects = allRects;
 
     var edges = [];
     state.main.calls.forEach(function(fid){ edges.push({ src:'__main__', tgt:fid }); });
@@ -496,29 +539,48 @@
       anchorCount[kSrc] = (anchorCount[kSrc]||0) + 1;
       anchorCount[kTgt] = (anchorCount[kTgt]||0) + 1;
     });
-    function nextOffset(key, rectWidth){
+    function nextOffset(key){
       var count = anchorCount[key] || 1;
       var idx = anchorIndex[key] || 0;
       anchorIndex[key] = idx + 1;
-      var spacing = Math.min(16, Math.max(8, (rectWidth - 20) / Math.max(count,1)));
-      var offset = (idx - (count - 1)/2) * spacing;
-      var maxOff = Math.max(0, rectWidth/2 - 10);
-      return Math.max(-maxOff, Math.min(maxOff, offset));
+      var spacing = Math.max(11, view.arrowWidth * 3.5);
+      var raw = (idx - (count - 1)/2) * spacing;
+      return Math.max(-260, Math.min(260, raw));
     }
 
+    // Segments of already-placed arrows become thin obstacles too, so later arrows steer
+    // around earlier ones instead of running alongside or through them.
+    var pathPad = Math.max(6, view.arrowWidth * 1.5);
+    function segmentsToRects(points){
+      var rects = [];
+      for(var i=0;i<points.length-1;i++){
+        var a=points[i], b=points[i+1];
+        if(Math.abs(a[0]-b[0]) < 0.5){
+          var y1=Math.min(a[1],b[1]), y2=Math.max(a[1],b[1]);
+          rects.push({ left:a[0]-pathPad, top:y1, width:pathPad*2, height:Math.max(1,y2-y1) });
+        } else {
+          var x1=Math.min(a[0],b[0]), x2=Math.max(a[0],b[0]);
+          rects.push({ left:x1, top:a[1]-pathPad, width:Math.max(1,x2-x1), height:pathPad*2 });
+        }
+      }
+      return rects;
+    }
+
+    var pathObstacles = [];
     var paths = '';
     prepared.forEach(function(p){
-      var sOff = nextOffset(p.src+'|b', p.sRect.width);
-      var tOff = nextOffset(p.tgt+'|t', p.tRect.width);
+      var sOff = nextOffset(p.src+'|b');
+      var tOff = nextOffset(p.tgt+'|t');
       var s = bottomPoint(p.sRect, sOff);
       var t = topPoint(p.tRect, tOff);
-      var obstacles = [];
-      Object.keys(allRects).forEach(function(id){
+      var boxObstacles = [];
+      Object.keys(obstacleRects).forEach(function(id){
         if(id===p.src || id===p.tgt) return;
-        obstacles.push(allRects[id]);
+        boxObstacles.push(obstacleRects[id]);
       });
-      var points = routeConnector(s, t, p.sRect, p.tRect, obstacles);
+      var points = routeConnector(s, t, p.sRect, p.tRect, boxObstacles, pathObstacles);
       paths += '<path d="'+pointsToPath(points)+'" class="connector" marker-end="url(#arrow)"></path>';
+      pathObstacles = pathObstacles.concat(segmentsToRects(points));
     });
 
     var defs = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8.7" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">'+
@@ -555,6 +617,26 @@
   function resetView(){
     view.x = 80; view.y = 60; view.scale = 1;
     applyTransform(); saveViewDebounced();
+  }
+
+  // ---- Display settings: arrow thickness & text size (wide, freely adjustable ranges) ----
+  function clampNum(v, min, max){ return Math.max(min, Math.min(max, v)); }
+  function syncArrowWidthInputs(){
+    var r = document.querySelector('[data-action="arrow-width-range"]');
+    if(r) r.value = view.arrowWidth;
+    var n = document.querySelector('[data-action="arrow-width-number"]');
+    if(n) n.value = view.arrowWidth;
+  }
+  function syncTextScaleInputs(){
+    var r = document.querySelector('[data-action="text-scale-range"]');
+    if(r) r.value = view.textScale;
+    var n = document.querySelector('[data-action="text-scale-number"]');
+    if(n) n.value = view.textScale;
+  }
+  function applyDisplaySettings(){
+    document.documentElement.style.setProperty('--arrow-width', view.arrowWidth + 'px');
+    document.documentElement.style.setProperty('--text-scale', view.textScale);
+    scheduleLayout();
   }
 
   // ---- Collision helpers (units, and functions within the same area, must not overlap) ----
@@ -603,49 +685,14 @@
     return { x:fx, y:fy };
   }
 
-  // ---- Snap-to-align helpers (straighten arrows while dragging) ----
-  function computeSnapTargetsForFunc(funcId, containerId, containerRefEl){
-    var containerFns = (containerId==='__main__') ? state.main.functions : (getUnit(containerId)||{functions:[]}).functions;
-    var f = containerFns.find(function(x){ return x.id===funcId; });
-    if(!f) return [];
-    var connected = new Set(f.calls || []);
-    containerFns.forEach(function(other){
-      if(other.id===funcId) return;
-      if((other.calls||[]).indexOf(funcId)!==-1) connected.add(other.id);
-    });
-    var targets = [];
-    connected.forEach(function(cid){
-      var belongs = containerFns.some(function(x){ return x.id===cid; });
-      if(!belongs) return;
-      var el = containerRefEl.querySelector('[data-fnode="'+cssEscape(cid)+'"]');
-      if(el) targets.push((parseFloat(el.style.left)||0) + el.offsetWidth/2);
-    });
-    if(containerId==='__main__' && state.main.calls.indexOf(funcId)!==-1){
-      var mb = document.querySelector('.main-box');
-      if(mb) targets.push((parseFloat(mb.style.left)||0) + mb.offsetWidth/2);
-    }
-    return targets;
-  }
-  function computeMainBoxSnapTargets(){
-    var targets = [];
-    state.main.calls.forEach(function(fid){
-      var el = document.querySelector('.func-node[data-fnode="'+cssEscape(fid)+'"]');
-      if(el && !el.closest('.unit-body')){
-        targets.push((parseFloat(el.style.left)||0) + el.offsetWidth/2);
-      }
-    });
-    return targets;
-  }
-
   // ---- Dragging (units, functions, main) ----
-  function makeDraggable(handleEl, movedEl, onMove, onEnd, getBounds, getSnapTargets, resolveCollision){
+  function makeDraggable(handleEl, movedEl, onMove, onEnd, getBounds, resolveCollision){
     handleEl.addEventListener('pointerdown', function(e){
       if(e.button !== undefined && e.button !== 0) return;
       var startX = e.clientX, startY = e.clientY;
       var startLeft = parseFloat(movedEl.style.left) || 0;
       var startTop = parseFloat(movedEl.style.top) || 0;
       var bounds = getBounds ? getBounds() : null;
-      var snapTargets = getSnapTargets ? getSnapTargets() : null;
       var lastX = startLeft, lastY = startTop;
       var moved = false;
       try{ handleEl.setPointerCapture(e.pointerId); }catch(err){}
@@ -659,14 +706,6 @@
         if(!moved) return;
         var nx = startLeft + dx, ny = startTop + dy;
 
-        if(snapTargets && snapTargets.length){
-          var w = movedEl.offsetWidth;
-          var centerX = nx + w/2;
-          var thresh = 6 / view.scale;
-          var best = null, bestDist = thresh;
-          snapTargets.forEach(function(tx){ var d = Math.abs(centerX-tx); if(d<bestDist){ bestDist=d; best=tx; } });
-          if(best !== null) nx = best - w/2;
-        }
         if(bounds){
           nx = Math.min(Math.max(bounds.minX, nx), bounds.maxX);
           ny = Math.min(Math.max(bounds.minY, ny), bounds.maxY);
@@ -746,7 +785,7 @@
 
     var mainBox = world.querySelector('.main-box');
     if(mainBox){
-      makeDraggable(mainBox, mainBox, function(nx, ny){ state.main.x = nx; state.main.y = ny; }, saveState, null, computeMainBoxSnapTargets,
+      makeDraggable(mainBox, mainBox, function(nx, ny){ state.main.x = nx; state.main.y = ny; }, saveState, null,
         function(nx, ny, lastX, lastY, w, h){
           var obstacles = otherUnitRects(null).concat(mainLevelElementRects(world, mainBox));
           return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
@@ -759,7 +798,7 @@
       makeDraggable(head, sec, function(nx, ny){
         var u = getUnit(unitId);
         if(u){ u.x = nx; u.y = ny; }
-      }, saveState, null, null, function(nx, ny, lastX, lastY, w, h){
+      }, saveState, null, function(nx, ny, lastX, lastY, w, h){
         var obstacles = otherUnitRects(unitId).concat(mainLevelElementRects(world));
         return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
       });
@@ -771,14 +810,11 @@
     world.querySelectorAll('.func-node').forEach(function(node){
       var funcId = node.dataset.fnode;
       var bodyEl = node.closest('.unit-body');
-      var containerId = bodyEl ? bodyEl.dataset.uid : '__main__';
-      var containerRefEl = bodyEl || world;
       var getBounds = bodyEl ? function(){
         var bw = bodyEl.clientWidth, bh = bodyEl.clientHeight;
         var nw = node.offsetWidth, nh = node.offsetHeight;
         return { minX:0, minY:0, maxX: Math.max(0, bw-nw), maxY: Math.max(0, bh-nh) };
       } : null;
-      var getSnap = function(){ return computeSnapTargetsForFunc(funcId, containerId, containerRefEl); };
       var resolveFuncCollision = function(nx, ny, lastX, lastY, w, h){
         var obstacles = bodyEl ? siblingFuncRects(bodyEl, node) : otherUnitRects(null).concat(mainLevelElementRects(world, node));
         return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
@@ -786,7 +822,7 @@
       makeDraggable(node, node, function(nx, ny){
         var res = findFunc(funcId);
         if(res){ res.func.x = nx; res.func.y = ny; }
-      }, saveState, getBounds, getSnap, resolveFuncCollision);
+      }, saveState, getBounds, resolveFuncCollision);
     });
   }
 
@@ -1032,6 +1068,10 @@
   document.addEventListener('input', function(e){
     var t = e.target;
     if(!t.dataset) return;
+    if(t.dataset.action === 'arrow-width-range'){ view.arrowWidth = +t.value; syncArrowWidthInputs(); applyDisplaySettings(); saveViewDebounced(); return; }
+    if(t.dataset.action === 'arrow-width-number'){ var awv=parseFloat(t.value); if(!isNaN(awv)){ view.arrowWidth = clampNum(awv,0,10); syncArrowWidthInputs(); applyDisplaySettings(); saveViewDebounced(); } return; }
+    if(t.dataset.action === 'text-scale-range'){ view.textScale = +t.value; syncTextScaleInputs(); applyDisplaySettings(); saveViewDebounced(); return; }
+    if(t.dataset.action === 'text-scale-number'){ var tsv=parseFloat(t.value); if(!isNaN(tsv)){ view.textScale = clampNum(tsv,0,20); syncTextScaleInputs(); applyDisplaySettings(); saveViewDebounced(); } return; }
     if(t.dataset.action === 'main-name'){ state.main.name = t.value; saveState(); renderCanvas(); return; }
     if(t.dataset.action === 'unit-name'){ var u1=getUnit(t.dataset.uid); if(u1){ u1.name=t.value; saveState(); renderCanvas(); } return; }
     if(t.dataset.action === 'unit-role'){ var u2=getUnit(t.dataset.uid); if(u2){ u2.role=t.value; saveState(); } return; }
@@ -1073,6 +1113,10 @@
   if(window.innerWidth <= 900){
     document.getElementById('app').classList.add('sidebar-collapsed');
   }
+  syncArrowWidthInputs();
+  syncTextScaleInputs();
+  applyDisplaySettings();
+
   initTheme();
   initPanZoom();
   render();
