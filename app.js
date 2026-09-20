@@ -27,9 +27,12 @@
   var funcForm = null;
   var pendingLayout = false;
   var downloadsCapPromise = null;
-  var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1 };
+  var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1, mode:'edit' };
   if(typeof view.arrowWidth !== 'number') view.arrowWidth = 2;
   if(typeof view.textScale !== 'number') view.textScale = 1;
+  if(view.mode !== 'edit' && view.mode !== 'view') view.mode = 'edit';
+  var focusId = null;   // id of the function/main currently isolated in view mode, or null
+  var focusSet = null;  // Set of ids visible while focused (the function itself + callers + callees)
 
   function uid(prefix){ return prefix + (state.nextId++); }
   function esc(s){
@@ -330,7 +333,7 @@
       '<div class="func-form">'+
         '<label class="field"><span>Nom</span><input type="text" value="'+esc(funcForm.name)+'" placeholder="ex. essai" data-form="name"/></label>'+
         '<label class="field"><span>Entrées</span><textarea rows="2" placeholder="mot : Chaîne" data-form="inputs">'+esc(funcForm.inputs)+'</textarea></label>'+
-        '<p class="hint small">Avec noms : <code>a, b : Naturel</code> (une ligne par groupe). Sans noms : <code>Naturel*2, Chaîne</code>. Laissez vide s’il n’y en a pas.</p>'+
+        '<p class="hint small">Avec noms : <code>a, b : Naturel</code> (une ligne par groupe). Sans noms : un type par ligne, ex. <code>Naturel*3</code> puis, à la ligne suivante, <code>TUser</code>. Laissez vide s’il n’y en a pas.</p>'+
         '<label class="field"><span>Sorties</span><textarea rows="2" placeholder="gagné : Booléen" data-form="outputs">'+esc(funcForm.outputs)+'</textarea></label>'+
         '<p class="hint small">Même notation que les entrées.</p>'+
         '<div class="calls-block"><span class="calls-label">Appelle</span>'+callsHtml+'</div>'+
@@ -370,13 +373,16 @@
         u.functions.forEach(function(f){ html += renderFuncNode(f); });
       }
       html += '</div>';
-      html += '<div class="resize-handle" data-uid="'+u.id+'" title="Redimensionner"></div>';
+      if(view.mode === 'edit'){
+        html += '<div class="resize-handle" data-uid="'+u.id+'" title="Redimensionner"></div>';
+      }
       html += '</section>';
     });
 
     world.innerHTML = html;
     applyTransform();
     attachDragHandlers();
+    applyFocusVisibility();
 
     var isEmpty = state.units.length===0 && state.main.calls.length===0 && state.main.functions.length===0;
     var emptyEl = document.getElementById('empty-state');
@@ -385,19 +391,42 @@
     requestAnimationFrame(layoutAndDraw);
   }
 
-  // ---- Layout: fixed-size unit boxes; functions are clamped so they can never leave them ----
+  // ---- Layout: unit boxes auto-grow (horizontally and/or vertically) to fit their
+  // functions/procedures; a manual resize sets a floor, not a hard ceiling — the box
+  // never shrinks below what its current content needs. ----
   function layoutUnitBox(u, world){
     var sectionEl = world.querySelector('.unit-diagram[data-uid="'+u.id+'"]');
     var bodyEl = world.querySelector('.unit-body[data-uid="'+u.id+'"]');
     if(!sectionEl || !bodyEl) return false;
-    var w = Math.max(MIN_UNIT_W, u.w || DEFAULT_UNIT_W);
-    var h = Math.max(MIN_UNIT_H, u.h || DEFAULT_UNIT_H);
+
+    var baseW = Math.max(MIN_UNIT_W, u.w || DEFAULT_UNIT_W);
+    var baseH = Math.max(MIN_UNIT_H, u.h || DEFAULT_UNIT_H);
+
+    var nodes = bodyEl.querySelectorAll('.func-node');
+    var naturalW = 0, naturalH = 0;
+    nodes.forEach(function(node){
+      if(node.style.display === 'none') return;
+      var nw = node.offsetWidth, nh = node.offsetHeight;
+      var x = parseFloat(node.style.left) || 0, y = parseFloat(node.style.top) || 0;
+      naturalW = Math.max(naturalW, x + nw + 22);
+      naturalH = Math.max(naturalH, y + nh + 22);
+    });
+
+    var w = Math.max(baseW, naturalW);
+    var h = Math.max(baseH, naturalH);
+    var grew = (w > baseW) || (h > baseH);
+    if(w > baseW) u.w = w;
+    if(h > baseH) u.h = h;
+
     bodyEl.style.width = w + 'px';
     bodyEl.style.height = h + 'px';
     sectionEl.style.width = w + 'px';
 
+    // Safety net only: with the box sized to fit above, this should rarely need to move
+    // anything — it only matters right after a manual resize shrinks below old content.
     var changed = false;
-    bodyEl.querySelectorAll('.func-node').forEach(function(node){
+    nodes.forEach(function(node){
+      if(node.style.display === 'none') return;
       var nw = node.offsetWidth, nh = node.offsetHeight;
       var maxX = Math.max(0, w - nw), maxY = Math.max(0, h - nh);
       var x = parseFloat(node.style.left) || 0, y = parseFloat(node.style.top) || 0;
@@ -408,7 +437,7 @@
         if(res){ res.func.x = nx; res.func.y = ny; changed = true; }
       }
     });
-    return changed;
+    return changed || grew;
   }
 
   function layoutAndDraw(){
@@ -546,7 +575,12 @@
     function topPoint(rect, offset){ return { x: rect.left+rect.width/2+offset, y: rect.top }; }
 
     var allRects = {}; // anchor + obstacle rects: the box itself only (labels may be crossed)
-    rootEl.querySelectorAll('[data-fid]').forEach(function(el){ allRects[el.dataset.fid] = relRect(el); });
+    rootEl.querySelectorAll('[data-fid]').forEach(function(el){
+      if(el.style.display === 'none') return;
+      var wrapper = el.closest('.func-node');
+      if(wrapper && wrapper.style.display === 'none') return;
+      allRects[el.dataset.fid] = relRect(el);
+    });
     var obstacleRects = allRects;
 
     var edges = [];
@@ -556,6 +590,10 @@
         f.calls.forEach(function(cid){ edges.push({ src:f.id, tgt:cid }); });
       });
     });
+
+    if(focusId){
+      edges = edges.filter(function(e){ return e.src===focusId || e.tgt===focusId; });
+    }
 
     var prepared = edges.filter(function(e){ return allRects[e.src] && allRects[e.tgt]; })
       .map(function(e){ return { src:e.src, tgt:e.tgt, sRect:allRects[e.src], tRect:allRects[e.tgt] }; });
@@ -669,6 +707,92 @@
     scheduleLayout();
   }
 
+  // ---- Mode: Édition (full editing) vs Consultation (read-only, canvas-focused) ----
+  function setMode(mode){
+    if(mode !== 'edit' && mode !== 'view') return;
+    view.mode = mode;
+    saveViewDebounced();
+    if(mode === 'edit'){
+      exitFocus();
+      document.getElementById('app').classList.remove('sidebar-collapsed');
+    } else {
+      funcForm = null;
+      document.getElementById('app').classList.add('sidebar-collapsed');
+    }
+    document.getElementById('app').classList.toggle('mode-view', mode === 'view');
+    document.querySelectorAll('.mode-btn').forEach(function(b){
+      b.dataset.active = (b.dataset.action === 'mode-'+mode) ? 'true' : 'false';
+    });
+    render();
+  }
+
+  function displayNameFor(id){
+    if(id === '__main__') return state.main.name || 'PPrinc';
+    var res = findFunc(id);
+    return res ? res.func.name : id;
+  }
+
+  function computeFocusSet(id){
+    var set = new Set([id]);
+    var ownCalls = (id === '__main__') ? state.main.calls : ((findFunc(id)||{}).func||{}).calls;
+    (ownCalls || []).forEach(function(c){ set.add(c); });
+    if(state.main.calls.indexOf(id) !== -1) set.add('__main__');
+    allContainers().forEach(function(c){
+      c.functions.forEach(function(f){
+        if((f.calls||[]).indexOf(id) !== -1) set.add(f.id);
+      });
+    });
+    return set;
+  }
+
+  function enterFocus(id){
+    focusId = id;
+    focusSet = computeFocusSet(id);
+    var bar = document.getElementById('focus-bar');
+    var text = document.getElementById('focus-bar-text');
+    if(text){
+      var name = displayNameFor(id);
+      var extra = focusSet.size - 1;
+      text.textContent = extra > 0
+        ? ('Affichage limité à « ' + name + ' » et ' + extra + ' fonction' + (extra>1?'s':'') + ' liée' + (extra>1?'s':'') + '.')
+        : ('Affichage limité à « ' + name + ' », qui n’appelle et n’est appelée par aucune autre fonction.');
+    }
+    if(bar) bar.hidden = false;
+    applyFocusVisibility();
+    scheduleLayout();
+  }
+
+  function exitFocus(){
+    focusId = null;
+    focusSet = null;
+    var bar = document.getElementById('focus-bar');
+    if(bar) bar.hidden = true;
+    applyFocusVisibility();
+    scheduleLayout();
+  }
+
+  // Shows/hides DOM nodes to match focusSet — layoutUnitBox and buildConnectorMarkup both
+  // skip hidden nodes, so a focused view never measures or routes around something unseen.
+  function applyFocusVisibility(){
+    var world = document.getElementById('canvas-world');
+    if(!world) return;
+    var mainBox = world.querySelector('.main-box');
+    if(mainBox) mainBox.style.display = (!focusSet || focusSet.has('__main__')) ? '' : 'none';
+
+    world.querySelectorAll('.func-node').forEach(function(node){
+      var visible = !focusSet || focusSet.has(node.dataset.fnode);
+      node.style.display = visible ? '' : 'none';
+    });
+
+    world.querySelectorAll('.unit-diagram').forEach(function(sec){
+      if(!focusSet){ sec.style.display = ''; return; }
+      var anyVisible = Array.prototype.some.call(sec.querySelectorAll('.func-node'), function(n){
+        return n.style.display !== 'none';
+      });
+      sec.style.display = anyVisible ? '' : 'none';
+    });
+  }
+
   // ---- Collision helpers (units, and functions within the same area, must not overlap) ----
   function rectsOverlap(a,b){
     return a.left < b.left+b.width && a.left+a.width > b.left && a.top < b.top+b.height && a.top+a.height > b.top;
@@ -718,6 +842,7 @@
   // ---- Dragging (units, functions, main) ----
   function makeDraggable(handleEl, movedEl, onMove, onEnd, getBounds, resolveCollision){
     handleEl.addEventListener('pointerdown', function(e){
+      if(view.mode !== 'edit') return;
       if(e.button !== undefined && e.button !== 0) return;
       var startX = e.clientX, startY = e.clientY;
       var startLeft = parseFloat(movedEl.style.left) || 0;
@@ -766,6 +891,7 @@
 
   function makeResizable(handleEl, unit){
     handleEl.addEventListener('pointerdown', function(e){
+      if(view.mode !== 'edit') return;
       if(e.button !== undefined && e.button !== 0) return;
       e.stopPropagation();
       var world = document.getElementById('canvas-world');
@@ -861,7 +987,7 @@
     var wrap = document.getElementById('canvas-wrap');
 
     wrap.addEventListener('pointerdown', function(e){
-      if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls')) return;
+      if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
       if(e.button !== undefined && e.button !== 0) return;
       var startX = e.clientX, startY = e.clientY;
       var startViewX = view.x, startViewY = view.y;
@@ -893,6 +1019,13 @@
       var factor = e.deltaY < 0 ? 1.1 : (1/1.1);
       zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
     }, { passive:false });
+
+    wrap.addEventListener('dblclick', function(e){
+      if(view.mode !== 'view') return;
+      var target = e.target.closest('[data-fid]');
+      if(!target) return;
+      enterFocus(target.dataset.fid);
+    });
 
     applyTransform();
   }
@@ -1071,6 +1204,9 @@
     switch(a){
       case 'toggle-sidebar': document.getElementById('app').classList.toggle('sidebar-collapsed'); scheduleLayout(); return;
       case 'toggle-theme': toggleTheme(); return;
+      case 'mode-edit': setMode('edit'); return;
+      case 'mode-view': setMode('view'); return;
+      case 'exit-focus': exitFocus(); return;
       case 'reset-all':
         if(confirm('Tout effacer ? Cette action est irréversible.')) resetAll();
         return;
@@ -1146,6 +1282,12 @@
   syncArrowWidthInputs();
   syncTextScaleInputs();
   applyDisplaySettings();
+
+  document.getElementById('app').classList.toggle('mode-view', view.mode === 'view');
+  document.querySelectorAll('.mode-btn').forEach(function(b){
+    b.dataset.active = (b.dataset.action === 'mode-'+view.mode) ? 'true' : 'false';
+  });
+  if(view.mode === 'view'){ document.getElementById('app').classList.add('sidebar-collapsed'); }
 
   initTheme();
   initPanZoom();

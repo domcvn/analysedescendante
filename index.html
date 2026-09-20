@@ -12,20 +12,25 @@
 <body>
 <div id="app">
   <header class="topbar">
-    <button class="icon-btn" data-action="toggle-sidebar" title="Afficher/masquer le panneau" aria-label="Afficher ou masquer le panneau">☰</button>
+    <button class="icon-btn edit-only" data-action="toggle-sidebar" title="Afficher/masquer le panneau" aria-label="Afficher ou masquer le panneau">☰</button>
     <div class="brand">
       <h1>Analyse descendante</h1>
       <p>Glissez et zoomez le canevas librement — mis à jour en temps réel</p>
     </div>
     <div class="topbar-actions">
+      <div class="mode-toggle" role="group" aria-label="Mode d'affichage">
+        <button class="mode-btn" data-action="mode-edit" data-active="true">✎ Édition</button>
+        <button class="mode-btn" data-action="mode-view">👁 Consultation</button>
+      </div>
+      <span class="topbar-divider"></span>
       <button class="btn btn-primary" data-action="export-state">Télécharger</button>
-      <label class="btn" for="import-file-input">Importer</label>
+      <label class="btn edit-only" for="import-file-input">Importer</label>
       <input type="file" id="import-file-input" accept="application/json,.json" hidden>
       <span class="topbar-divider"></span>
       <label class="seg-control" title="Épaisseur des flèches"><span class="label-desktop">Épaisseur </span><input type="range" min="0" max="10" step="0.1" value="2" data-action="arrow-width-range"/><input type="number" min="0" max="10" step="0.1" value="2" class="seg-number" data-action="arrow-width-number"/></label>
       <label class="seg-control" title="Taille du texte"><span class="label-desktop">Texte </span><input type="range" min="0" max="20" step="0.1" value="1" data-action="text-scale-range"/><input type="number" min="0" max="20" step="0.1" value="1" class="seg-number" data-action="text-scale-number"/></label>
       <span class="topbar-divider"></span>
-      <button class="btn btn-ghost" data-action="reset-all">Tout effacer</button>
+      <button class="btn btn-ghost edit-only" data-action="reset-all">Tout effacer</button>
       <button class="btn" data-action="export-image">Image (PNG)</button>
       <button class="btn" data-action="export-pdf">PDF</button>
       <button class="icon-btn plain" data-action="toggle-theme" title="Changer de thème" aria-label="Changer de thème">◐</button>
@@ -46,6 +51,10 @@
         <button class="icon-btn" data-action="zoom-in" title="Zoomer" aria-label="Zoomer">+</button>
         <button class="icon-btn" data-action="zoom-out" title="Dézoomer" aria-label="Dézoomer">–</button>
         <button class="icon-btn" data-action="reset-view" title="Réinitialiser la vue" aria-label="Réinitialiser la vue">⤾</button>
+      </div>
+      <div id="focus-bar" class="focus-bar" hidden>
+        <span id="focus-bar-text"></span>
+        <button class="btn btn-primary" data-action="exit-focus">Revenir à la vue complète</button>
       </div>
     </main>
   </div>
