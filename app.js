@@ -989,6 +989,7 @@
     wrap.addEventListener('pointerdown', function(e){
       if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
       if(e.button !== undefined && e.button !== 0) return;
+      e.preventDefault();
       var startX = e.clientX, startY = e.clientY;
       var startViewX = view.x, startViewY = view.y;
       var moved = false;
