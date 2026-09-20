@@ -105,21 +105,6 @@
     try{ localStorage.setItem(VIEW_KEY, JSON.stringify(view)); }catch(e){}
   }, 200);
 
-  // ---- GitHub sync config (kept only in this browser, never committed) ----
-  var GH_CFG_KEY = 'adesc_github_cfg';
-  function loadGhConfig(){
-    try{
-      var raw = localStorage.getItem(GH_CFG_KEY);
-      if(!raw) return {};
-      var v = JSON.parse(raw);
-      return (v && typeof v === 'object') ? v : {};
-    }catch(e){ return {}; }
-  }
-  function saveGhConfig(){
-    try{ localStorage.setItem(GH_CFG_KEY, JSON.stringify(ghConfig)); }catch(e){}
-  }
-  var ghConfig = Object.assign({ owner:'', repo:'', path:'analyse-descendante.json', branch:'main', token:'' }, loadGhConfig());
-
   // ---- Model helpers ----
   function getUnit(id){
     for(var i=0;i<state.units.length;i++){ if(state.units[i].id===id) return state.units[i]; }
@@ -279,21 +264,6 @@
       '<div class="side-section">'+
         '<div class="section-head"><h2>Unités</h2><button class="btn btn-primary" data-action="add-unit">+ Unité</button></div>'+
         unitsHtml+
-      '</div>'+
-      '<div class="side-section">'+
-        '<h2>Sauvegarde GitHub</h2>'+
-        '<p class="hint small">Enregistre l’analyse comme un fichier JSON dans un dépôt GitHub (avec historique des versions), pour la retrouver depuis n’importe quel navigateur.</p>'+
-        '<label class="field"><span>Compte / organisation</span><input type="text" value="'+esc(ghConfig.owner)+'" placeholder="ex. mon-compte" data-action="gh-owner"/></label>'+
-        '<label class="field"><span>Dépôt</span><input type="text" value="'+esc(ghConfig.repo)+'" placeholder="ex. mon-projet" data-action="gh-repo"/></label>'+
-        '<label class="field"><span>Chemin du fichier</span><input type="text" value="'+esc(ghConfig.path)+'" placeholder="analyse-descendante.json" data-action="gh-path"/></label>'+
-        '<label class="field"><span>Branche</span><input type="text" value="'+esc(ghConfig.branch)+'" placeholder="main" data-action="gh-branch"/></label>'+
-        '<label class="field"><span>Jeton d’accès personnel</span><input type="password" value="'+esc(ghConfig.token)+'" placeholder="ghp_… ou github_pat_…" data-action="gh-token"/></label>'+
-        '<p class="hint small">Le jeton reste uniquement dans ce navigateur (stockage local) et n’est envoyé qu’à l’API GitHub. Créez-en un dans GitHub → Settings → Developer settings → Fine-grained tokens, limité à ce seul dépôt, avec la permission « Contents: Read and write ».</p>'+
-        '<div class="form-actions">'+
-          '<button class="btn btn-primary" data-action="gh-save">Enregistrer sur GitHub</button>'+
-          '<button class="btn btn-ghost" data-action="gh-load">Charger depuis GitHub</button>'+
-        '</div>'+
-        '<p class="hint small" id="gh-status"></p>'+
       '</div>';
   }
 
@@ -863,11 +833,13 @@
     });
   }
 
-  // ---- Whole-project download / import (portable backup, independent of GitHub) ----
+  // ---- Whole-project download / import (portable backup, restores everything) ----
   function exportStateFile(){
     var json = JSON.stringify(state, null, 2);
     var blob = new Blob([json], { type:'application/json' });
-    saveFile('analyse-descendante.json', blob);
+    saveFile('analyse-descendante.json', blob).then(function(ok){
+      if(!ok) alert('Le téléchargement a été annulé ou n’est pas disponible ici.');
+    });
   }
   function importStateFile(file){
     var reader = new FileReader();
@@ -885,101 +857,6 @@
     };
     reader.onerror = function(){ alert('Erreur de lecture du fichier.'); };
     reader.readAsText(file);
-  }
-
-  // ---- GitHub save/load (stores the analysis as a JSON file via the Contents API) ----
-  function b64EncodeUnicode(str){
-    var bytes = new TextEncoder().encode(str);
-    var binary = '';
-    bytes.forEach(function(b){ binary += String.fromCharCode(b); });
-    return btoa(binary);
-  }
-  function b64DecodeUnicode(b64){
-    var binary = atob(b64.replace(/\n/g,''));
-    var bytes = new Uint8Array(binary.length);
-    for(var i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  }
-  function ghApiUrl(){
-    var path = String(ghConfig.path||'').split('/').filter(Boolean).map(encodeURIComponent).join('/');
-    return 'https://api.github.com/repos/'+encodeURIComponent(ghConfig.owner)+'/'+encodeURIComponent(ghConfig.repo)+'/contents/'+path;
-  }
-  function ghHeaders(){
-    return {
-      'Authorization': 'token ' + ghConfig.token,
-      'Accept': 'application/vnd.github+json',
-      'Content-Type': 'application/json'
-    };
-  }
-  function setGhStatus(msg){
-    var el = document.getElementById('gh-status');
-    if(el) el.textContent = msg;
-  }
-  function ghSave(){
-    if(!ghConfig.owner || !ghConfig.repo || !ghConfig.token){
-      setGhStatus('Renseignez au moins le compte, le dépôt et le jeton.');
-      return;
-    }
-    setGhStatus('Enregistrement…');
-    var branch = ghConfig.branch || 'main';
-    fetch(ghApiUrl()+'?ref='+encodeURIComponent(branch), { headers: ghHeaders() })
-      .then(function(getRes){
-        if(getRes.status===200) return getRes.json().then(function(d){ return d.sha; });
-        if(getRes.status===404) return null;
-        return getRes.json().catch(function(){ return {}; }).then(function(d){
-          throw new Error('Lecture impossible ('+getRes.status+') : '+(d.message||''));
-        });
-      })
-      .then(function(sha){
-        var body = {
-          message: 'Mise à jour de l’analyse descendante',
-          content: b64EncodeUnicode(JSON.stringify(state, null, 2)),
-          branch: branch
-        };
-        if(sha) body.sha = sha;
-        return fetch(ghApiUrl(), { method:'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
-      })
-      .then(function(putRes){
-        if(!putRes.ok){
-          return putRes.json().catch(function(){ return {}; }).then(function(d){
-            throw new Error('Échec de l’enregistrement ('+putRes.status+') : '+(d.message||''));
-          });
-        }
-        setGhStatus('Enregistré sur GitHub ✓');
-      })
-      .catch(function(err){ setGhStatus('Erreur : ' + err.message); });
-  }
-  function ghLoad(){
-    if(!ghConfig.owner || !ghConfig.repo || !ghConfig.token){
-      setGhStatus('Renseignez au moins le compte, le dépôt et le jeton.');
-      return;
-    }
-    setGhStatus('Chargement…');
-    var branch = ghConfig.branch || 'main';
-    fetch(ghApiUrl()+'?ref='+encodeURIComponent(branch), { headers: ghHeaders() })
-      .then(function(res){
-        if(res.status===404){ setGhStatus('Fichier introuvable sur GitHub (pas encore enregistré ?).'); return null; }
-        if(!res.ok){
-          return res.json().catch(function(){ return {}; }).then(function(d){
-            throw new Error('Échec du chargement ('+res.status+') : '+(d.message||''));
-          });
-        }
-        return res.json();
-      })
-      .then(function(data){
-        if(!data) return;
-        var jsonText = b64DecodeUnicode(data.content);
-        var parsed;
-        try{ parsed = JSON.parse(jsonText); }catch(e){ throw new Error('Le fichier trouvé n’est pas un JSON valide.'); }
-        var migrated = migrate(parsed);
-        if(!migrated) throw new Error('Le contenu ne correspond pas au format attendu.');
-        state = migrated;
-        funcForm = null;
-        saveState();
-        render();
-        setGhStatus('Chargé depuis GitHub ✓');
-      })
-      .catch(function(err){ setGhStatus('Erreur : ' + err.message); });
   }
 
   // ---- Export: clean off-screen snapshot with margins, independent of current pan/zoom ----
@@ -1100,9 +977,6 @@
       case 'export-image': exportImage(); return;
       case 'export-pdf': exportPDF(); return;
       case 'export-state': exportStateFile(); return;
-      case 'import-state': { var fi=document.getElementById('import-file-input'); if(fi) fi.click(); return; }
-      case 'gh-save': ghSave(); return;
-      case 'gh-load': ghLoad(); return;
       case 'zoom-in': { var r=document.getElementById('canvas-wrap').getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1.2); return; }
       case 'zoom-out': { var r2=document.getElementById('canvas-wrap').getBoundingClientRect(); zoomAt(r2.width/2, r2.height/2, 1/1.2); return; }
       case 'reset-view': resetView(); return;
@@ -1124,11 +998,6 @@
   document.addEventListener('input', function(e){
     var t = e.target;
     if(!t.dataset) return;
-    if(t.dataset.action === 'gh-owner'){ ghConfig.owner = t.value; saveGhConfig(); return; }
-    if(t.dataset.action === 'gh-repo'){ ghConfig.repo = t.value; saveGhConfig(); return; }
-    if(t.dataset.action === 'gh-path'){ ghConfig.path = t.value; saveGhConfig(); return; }
-    if(t.dataset.action === 'gh-branch'){ ghConfig.branch = t.value; saveGhConfig(); return; }
-    if(t.dataset.action === 'gh-token'){ ghConfig.token = t.value; saveGhConfig(); return; }
     if(t.dataset.action === 'main-name'){ state.main.name = t.value; saveState(); renderCanvas(); return; }
     if(t.dataset.action === 'unit-name'){ var u1=getUnit(t.dataset.uid); if(u1){ u1.name=t.value; saveState(); renderCanvas(); } return; }
     if(t.dataset.action === 'unit-role'){ var u2=getUnit(t.dataset.uid); if(u2){ u2.role=t.value; saveState(); } return; }
