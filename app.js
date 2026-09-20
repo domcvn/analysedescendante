@@ -863,6 +863,30 @@
     });
   }
 
+  // ---- Whole-project download / import (portable backup, independent of GitHub) ----
+  function exportStateFile(){
+    var json = JSON.stringify(state, null, 2);
+    var blob = new Blob([json], { type:'application/json' });
+    saveFile('analyse-descendante.json', blob);
+  }
+  function importStateFile(file){
+    var reader = new FileReader();
+    reader.onload = function(){
+      var parsed;
+      try{ parsed = JSON.parse(String(reader.result)); }
+      catch(e){ alert('Impossible de lire ce fichier : ce n’est pas un JSON valide.'); return; }
+      var migrated = migrate(parsed);
+      if(!migrated){ alert('Ce fichier ne correspond pas au format attendu.'); return; }
+      if(!confirm('Remplacer l’analyse actuelle par le contenu de ce fichier ?')) return;
+      state = migrated;
+      funcForm = null;
+      saveState();
+      render();
+    };
+    reader.onerror = function(){ alert('Erreur de lecture du fichier.'); };
+    reader.readAsText(file);
+  }
+
   // ---- GitHub save/load (stores the analysis as a JSON file via the Contents API) ----
   function b64EncodeUnicode(str){
     var bytes = new TextEncoder().encode(str);
@@ -1075,6 +1099,8 @@
         return;
       case 'export-image': exportImage(); return;
       case 'export-pdf': exportPDF(); return;
+      case 'export-state': exportStateFile(); return;
+      case 'import-state': { var fi=document.getElementById('import-file-input'); if(fi) fi.click(); return; }
       case 'gh-save': ghSave(); return;
       case 'gh-load': ghLoad(); return;
       case 'zoom-in': { var r=document.getElementById('canvas-wrap').getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1.2); return; }
@@ -1129,6 +1155,15 @@
       return;
     }
   });
+
+  var importInput = document.getElementById('import-file-input');
+  if(importInput){
+    importInput.addEventListener('change', function(e){
+      var file = e.target.files && e.target.files[0];
+      if(file) importStateFile(file);
+      e.target.value = '';
+    });
+  }
 
   window.addEventListener('resize', debounce(layoutAndDraw, 150));
 

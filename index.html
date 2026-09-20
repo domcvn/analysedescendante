@@ -18,12 +18,16 @@
       <p>Glissez et zoomez le canevas librement — mis à jour en temps réel</p>
     </div>
     <div class="topbar-actions">
+      <button class="btn btn-primary" data-action="export-state">Télécharger</button>
+      <button class="btn" data-action="import-state">Importer</button>
+      <span class="topbar-divider"></span>
       <button class="btn btn-ghost" data-action="reset-all">Tout effacer</button>
       <button class="btn" data-action="export-image">Image (PNG)</button>
       <button class="btn" data-action="export-pdf">PDF</button>
       <button class="icon-btn plain" data-action="toggle-theme" title="Changer de thème" aria-label="Changer de thème">◐</button>
     </div>
   </header>
+  <input type="file" id="import-file-input" accept="application/json,.json" hidden>
   <div id="layout">
     <aside id="sidebar"></aside>
     <main id="canvas-wrap">
