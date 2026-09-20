@@ -557,9 +557,12 @@
     applyTransform(); saveViewDebounced();
   }
 
-  // ---- Collision helpers (units must not overlap each other) ----
+  // ---- Collision helpers (units, and functions within the same area, must not overlap) ----
   function rectsOverlap(a,b){
     return a.left < b.left+b.width && a.left+a.width > b.left && a.top < b.top+b.height && a.top+a.height > b.top;
+  }
+  function rectFromStyle(el){
+    return { left: parseFloat(el.style.left)||0, top: parseFloat(el.style.top)||0, width: el.offsetWidth, height: el.offsetHeight };
   }
   function otherUnitRects(excludeId){
     var world = document.getElementById('canvas-world');
@@ -569,6 +572,35 @@
         ? { left: parseFloat(el.style.left)||0, top: parseFloat(el.style.top)||0, width: el.offsetWidth, height: el.offsetHeight }
         : { left:u.x, top:u.y, width:u.w||DEFAULT_UNIT_W, height:u.h||DEFAULT_UNIT_H };
     });
+  }
+  // Main-level elements = PPrinc box + the main program's own free-floating functions
+  // (i.e. everything at the top level of the canvas, not nested inside a unit).
+  function mainLevelElementRects(world, excludeEl){
+    var arr = [];
+    var mb = world.querySelector('.main-box');
+    if(mb && mb!==excludeEl) arr.push(rectFromStyle(mb));
+    world.querySelectorAll('.func-node').forEach(function(n){
+      if(n===excludeEl) return;
+      if(!n.closest('.unit-body')) arr.push(rectFromStyle(n));
+    });
+    return arr;
+  }
+  // Functions within the same unit must not overlap each other.
+  function siblingFuncRects(bodyEl, excludeNode){
+    var arr = [];
+    bodyEl.querySelectorAll('.func-node').forEach(function(n){
+      if(n!==excludeNode) arr.push(rectFromStyle(n));
+    });
+    return arr;
+  }
+  function axisSlide(nx, ny, lastX, lastY, w, h, obstacles){
+    var testX = { left:nx, top:lastY, width:w, height:h };
+    var xOk = !obstacles.some(function(o){ return rectsOverlap(testX,o); });
+    var fx = xOk ? nx : lastX;
+    var testY = { left:fx, top:ny, width:w, height:h };
+    var yOk = !obstacles.some(function(o){ return rectsOverlap(testY,o); });
+    var fy = yOk ? ny : lastY;
+    return { x:fx, y:fy };
   }
 
   // ---- Snap-to-align helpers (straighten arrows while dragging) ----
@@ -683,7 +715,7 @@
         var candW = Math.max(MIN_UNIT_W, startW + dx);
         var candBodyH = Math.max(MIN_UNIT_H, startBodyH + dy);
 
-        var others = otherUnitRects(unit.id);
+        var others = otherUnitRects(unit.id).concat(mainLevelElementRects(world));
         var testW = { left:unit.x, top:unit.y, width:candW, height: lastBodyH+headerH };
         var wOk = !others.some(function(o){ return rectsOverlap(testW,o); });
         var fw = wOk ? candW : lastW;
@@ -714,7 +746,11 @@
 
     var mainBox = world.querySelector('.main-box');
     if(mainBox){
-      makeDraggable(mainBox, mainBox, function(nx, ny){ state.main.x = nx; state.main.y = ny; }, saveState, null, computeMainBoxSnapTargets);
+      makeDraggable(mainBox, mainBox, function(nx, ny){ state.main.x = nx; state.main.y = ny; }, saveState, null, computeMainBoxSnapTargets,
+        function(nx, ny, lastX, lastY, w, h){
+          var obstacles = otherUnitRects(null).concat(mainLevelElementRects(world, mainBox));
+          return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
+        });
     }
 
     world.querySelectorAll('.unit-diagram').forEach(function(sec){
@@ -724,14 +760,8 @@
         var u = getUnit(unitId);
         if(u){ u.x = nx; u.y = ny; }
       }, saveState, null, null, function(nx, ny, lastX, lastY, w, h){
-        var others = otherUnitRects(unitId);
-        var testX = { left:nx, top:lastY, width:w, height:h };
-        var xOk = !others.some(function(o){ return rectsOverlap(testX,o); });
-        var fx = xOk ? nx : lastX;
-        var testY = { left:fx, top:ny, width:w, height:h };
-        var yOk = !others.some(function(o){ return rectsOverlap(testY,o); });
-        var fy = yOk ? ny : lastY;
-        return { x:fx, y:fy };
+        var obstacles = otherUnitRects(unitId).concat(mainLevelElementRects(world));
+        return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
       });
       var handle = sec.querySelector('.resize-handle');
       var unit = getUnit(unitId);
@@ -749,10 +779,14 @@
         return { minX:0, minY:0, maxX: Math.max(0, bw-nw), maxY: Math.max(0, bh-nh) };
       } : null;
       var getSnap = function(){ return computeSnapTargetsForFunc(funcId, containerId, containerRefEl); };
+      var resolveFuncCollision = function(nx, ny, lastX, lastY, w, h){
+        var obstacles = bodyEl ? siblingFuncRects(bodyEl, node) : otherUnitRects(null).concat(mainLevelElementRects(world, node));
+        return axisSlide(nx, ny, lastX, lastY, w, h, obstacles);
+      };
       makeDraggable(node, node, function(nx, ny){
         var res = findFunc(funcId);
         if(res){ res.func.x = nx; res.func.y = ny; }
-      }, saveState, getBounds, getSnap);
+      }, saveState, getBounds, getSnap, resolveFuncCollision);
     });
   }
 
