@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Analyse descendante</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button class="icon-btn" data-action="toggle-sidebar" title="Afficher/masquer le panneau" aria-label="Afficher ou masquer le panneau">☰</button>
+    <div class="brand">
+      <h1>Analyse descendante</h1>
+      <p>Glissez et zoomez le canevas librement — mis à jour en temps réel</p>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" data-action="reset-all">Tout effacer</button>
+      <button class="btn" data-action="export-image">Image (PNG)</button>
+      <button class="btn" data-action="export-pdf">PDF</button>
+      <button class="icon-btn plain" data-action="toggle-theme" title="Changer de thème" aria-label="Changer de thème">◐</button>
+    </div>
+  </header>
+  <div id="layout">
+    <aside id="sidebar"></aside>
+    <main id="canvas-wrap">
+      <div id="canvas-world"></div>
+      <svg id="connector-svg" class="connector-svg"></svg>
+      <div id="empty-state" class="empty-state" hidden>
+        <div class="empty-state-inner">
+          <p>Votre analyse descendante apparaît ici.</p>
+          <p>Ajoutez une unité ou une procédure du programme principal dans le panneau de gauche. Glissez pour déplacer la vue, molette pour zoomer.</p>
+        </div>
+      </div>
+      <div class="zoom-controls">
+        <button class="icon-btn" data-action="zoom-in" title="Zoomer" aria-label="Zoomer">+</button>
+        <button class="icon-btn" data-action="zoom-out" title="Dézoomer" aria-label="Dézoomer">–</button>
+        <button class="icon-btn" data-action="reset-view" title="Réinitialiser la vue" aria-label="Réinitialiser la vue">⤾</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
