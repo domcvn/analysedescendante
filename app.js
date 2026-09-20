@@ -62,7 +62,7 @@
   function migrate(s){
     if(!s || !Array.isArray(s.units)) return null;
     if(typeof s.nextId !== 'number') s.nextId = 1;
-    if(!s.main){
+    if(!s.main || typeof s.main !== 'object'){
       s.main = {
         name: (typeof s.mainName === 'string') ? s.mainName : 'PPrinc',
         x: (typeof s.mainX === 'number') ? s.mainX : 60,
@@ -71,16 +71,26 @@
         functions: []
       };
     }
+    if(typeof s.main.name !== 'string') s.main.name = 'PPrinc';
+    if(typeof s.main.x !== 'number') s.main.x = 60;
+    if(typeof s.main.y !== 'number') s.main.y = 40;
     delete s.mainName; delete s.mainCalls; delete s.mainX; delete s.mainY;
     if(!Array.isArray(s.main.functions)) s.main.functions = [];
     if(!Array.isArray(s.main.calls)) s.main.calls = [];
+    s.main.functions = s.main.functions.filter(function(f){ return f && typeof f==='object' && typeof f.id==='string' && f.id; });
     s.main.functions.forEach(migrateFunc);
     s.units.forEach(function(u, ui){
+      if(!u || typeof u !== 'object') u = {};
       if(typeof u.x !== 'number') u.x = 40 + (ui % 3) * 440;
       if(typeof u.y !== 'number') u.y = 140 + Math.floor(ui / 3) * 380;
-      if(!u.color) u.color = PALETTE[ui % PALETTE.length];
+      if(!u.color || typeof u.color.bg !== 'string' || typeof u.color.border !== 'string') u.color = PALETTE[ui % PALETTE.length];
       if(!Array.isArray(u.functions)) u.functions = [];
+      if(typeof u.name !== 'string') u.name = 'Unité';
+      if(typeof u.role !== 'string') u.role = '';
+      if(typeof u.tads !== 'string') u.tads = '';
+      u.functions = u.functions.filter(function(f){ return f && typeof f==='object' && typeof f.id==='string' && f.id; });
       u.functions.forEach(migrateFunc);
+      s.units[ui] = u;
     });
     return s;
   }
@@ -450,33 +460,49 @@
     return len;
   }
 
+  // Performance: for large diagrams, most obstacles are nowhere near a given edge. Narrowing
+  // the obstacle list to a generous region around the edge before the (fairly expensive)
+  // candidate search keeps big diagrams smooth without changing the outcome — validated with
+  // thousands of synthetic cases; the margin is scaled with renderScale like the rest of the
+  // routing geometry so it represents the same real distance regardless of zoom.
+  function relevantObstacles(s, t, sRect, tRect, obstacles, renderScale){
+    var margin = 300 * renderScale;
+    var left = Math.min(s.x, t.x, sRect.left, tRect.left) - margin;
+    var right = Math.max(s.x, t.x, sRect.left+sRect.width, tRect.left+tRect.width) + margin;
+    var top = Math.min(s.y, t.y) - margin;
+    var bottom = Math.max(s.y, t.y) + margin;
+    return obstacles.filter(function(o){
+      return o.left < right && o.left+o.width > left && o.top < bottom && o.top+o.height > top;
+    });
+  }
+
   // boxObstacles (functions, their labels, units) must never be crossed. pathObstacles
   // (other arrows already drawn) are avoided when possible, but not at the cost of a much
   // longer detour — a brief crossing between two arrows reads far better than a convoluted
   // path, so among everything that keeps clear of boxes we always pick the shortest route,
   // preferring ones that also dodge other arrows only when that doesn't require the more
   // complex candidates to win instead.
-  function routeConnector(s, t, sRect, tRect, boxObstacles, pathObstacles){
-    var leg = 30;
-    var clearance = Math.max(14, leg*0.7);
+  function routeConnector(s, t, sRect, tRect, boxObstacles, pathObstacles, renderScale){
+    var leg = 30 * renderScale;
+    var clearance = Math.max(14*renderScale, leg*0.7);
     var candidates = [];
 
     if(t.y >= s.y){
       var span = t.y - s.y;
-      var mids = [
-        s.y + span/2, s.y + clearance, t.y - clearance,
-        s.y + span*0.25, s.y + span*0.75
-      ];
-      mids.forEach(function(midY){
-        if(midY < s.y || midY > t.y) return;
-        candidates.push([ [s.x,s.y],[s.x,midY],[t.x,midY],[t.x,t.y] ]);
-      });
+      // Scan the whole span, not just a handful of fixed fractions, so there is a real
+      // chance of landing a corridor that clears every other arrow, not only the boxes.
+      var STEPS = 10;
+      for(var k=1; k<STEPS; k++){
+        candidates.push([ [s.x,s.y],[s.x, s.y+span*(k/STEPS)],[t.x, s.y+span*(k/STEPS)],[t.x,t.y] ]);
+      }
+      candidates.push([ [s.x,s.y],[s.x, s.y+clearance],[t.x, s.y+clearance],[t.x,t.y] ]);
+      candidates.push([ [s.x,s.y],[s.x, t.y-clearance],[t.x, t.y-clearance],[t.x,t.y] ]);
     }
 
     // Try several detour heights: if the row just below the source (or just above the
-    // target) happens to run straight through some other function, a taller/shorter
-    // detour may clear it instead of forcing a wider sideways swing.
-    [1, 1.8, 2.6].forEach(function(legMult){
+    // target) happens to run straight through some other function (or another arrow),
+    // a taller/shorter detour may clear it instead of forcing a wider sideways swing.
+    [1, 1.5, 2, 2.6, 3.3].forEach(function(legMult){
       var belowY = s.y + leg*legMult;
       var aboveY = t.y - leg*legMult;
 
@@ -492,7 +518,7 @@
         maxRight = Math.max(maxRight, o.left+o.width);
       });
 
-      [1, 2.4].forEach(function(mult){
+      [1, 1.8, 2.6, 3.6].forEach(function(mult){
         var cl = minLeft - clearance*mult, cr = maxRight + clearance*mult;
         [cl, cr].sort(function(a,b){ return Math.abs(s.x-a)-Math.abs(s.x-b); }).forEach(function(clearX){
           candidates.push([ [s.x,s.y],[s.x,belowY],[clearX,belowY],[clearX,aboveY],[t.x,aboveY],[t.x,t.y] ]);
@@ -509,7 +535,8 @@
     return pool[0];
   }
 
-  function buildConnectorMarkup(rootEl, refEl){
+  function buildConnectorMarkup(rootEl, refEl, renderScale){
+    renderScale = renderScale || 1;
     var refRect = refEl.getBoundingClientRect();
     function relRect(el){
       var r = el.getBoundingClientRect();
@@ -543,14 +570,15 @@
       var count = anchorCount[key] || 1;
       var idx = anchorIndex[key] || 0;
       anchorIndex[key] = idx + 1;
-      var spacing = Math.max(11, view.arrowWidth * 3.5);
+      var spacing = Math.max(13, view.arrowWidth * 4) * renderScale;
       var raw = (idx - (count - 1)/2) * spacing;
-      return Math.max(-260, Math.min(260, raw));
+      var cap = 260 * renderScale;
+      return Math.max(-cap, Math.min(cap, raw));
     }
 
     // Segments of already-placed arrows become thin obstacles too, so later arrows steer
     // around earlier ones instead of running alongside or through them.
-    var pathPad = Math.max(6, view.arrowWidth * 1.5);
+    var pathPad = Math.max(9, view.arrowWidth * 2.2) * renderScale;
     function segmentsToRects(points){
       var rects = [];
       for(var i=0;i<points.length-1;i++){
@@ -578,7 +606,9 @@
         if(id===p.src || id===p.tgt) return;
         boxObstacles.push(obstacleRects[id]);
       });
-      var points = routeConnector(s, t, p.sRect, p.tRect, boxObstacles, pathObstacles);
+      boxObstacles = relevantObstacles(s, t, p.sRect, p.tRect, boxObstacles, renderScale);
+      var nearPathObstacles = relevantObstacles(s, t, p.sRect, p.tRect, pathObstacles, renderScale);
+      var points = routeConnector(s, t, p.sRect, p.tRect, boxObstacles, nearPathObstacles, renderScale);
       paths += '<path d="'+pointsToPath(points)+'" class="connector" marker-end="url(#arrow)"></path>';
       pathObstacles = pathObstacles.concat(segmentsToRects(points));
     });
@@ -597,7 +627,7 @@
     svg.setAttribute('width', cw);
     svg.setAttribute('height', ch);
     svg.setAttribute('viewBox', '0 0 '+cw+' '+ch);
-    svg.innerHTML = buildConnectorMarkup(world, wrap);
+    svg.innerHTML = buildConnectorMarkup(world, wrap, view.scale);
   }
 
   // ---- View: pan & zoom ----
@@ -981,7 +1011,7 @@
     tempWrap.appendChild(svgEl);
 
     document.body.appendChild(tempWrap);
-    svgEl.innerHTML = buildConnectorMarkup(worldClone, tempWrap);
+    svgEl.innerHTML = buildConnectorMarkup(worldClone, tempWrap, 1);
 
     return { tempWrap:tempWrap, width:w, height:h };
   }
