@@ -61,6 +61,7 @@
     if(f.inputs == null) f.inputs = '';
     if(f.outputs == null) f.outputs = '';
     if(!Array.isArray(f.calls)) f.calls = [];
+    if(typeof f.hidden !== 'boolean') f.hidden = false;
   }
   function migrate(s){
     if(!s || !Array.isArray(s.units)) return null;
@@ -312,13 +313,17 @@
     return ins + ' → ' + outs;
   }
   function renderFuncRow(f){
+    var hiddenCls = f.hidden ? ' func-hidden' : '';
+    var eyeIcon = f.hidden ? '⦸' : '👁';
+    var eyeTitle = f.hidden ? 'Afficher dans le schéma' : 'Masquer du schéma';
     return (
-      '<div class="func-list-row">'+
+      '<div class="func-list-row'+hiddenCls+'">'+
         '<div class="func-list-info">'+
           '<span class="func-name">'+esc(f.name)+'</span>'+
           '<span class="func-sig">'+esc(sigText(f))+'</span>'+
         '</div>'+
         '<div class="func-list-actions">'+
+          '<button class="icon-btn" data-action="toggle-func-visible" data-fid="'+f.id+'" title="'+eyeTitle+'">'+eyeIcon+'</button>'+
           '<button class="icon-btn" data-action="edit-func" data-fid="'+f.id+'" title="Modifier">✎</button>'+
           '<button class="icon-btn danger" data-action="delete-func" data-fid="'+f.id+'" title="Supprimer">✕</button>'+
         '</div>'+
@@ -511,6 +516,33 @@
   // path, so among everything that keeps clear of boxes we always pick the shortest route,
   // preferring ones that also dodge other arrows only when that doesn't require the more
   // complex candidates to win instead.
+  function collisionScore(points, obstacles){
+    var score = 0;
+    for(var i=0;i<points.length-1;i++){
+      var a=points[i], b=points[i+1];
+      if(Math.abs(a[0]-b[0]) < 0.5){
+        var x=a[0], y1=Math.min(a[1],b[1]), y2=Math.max(a[1],b[1]);
+        for(var j=0;j<obstacles.length;j++){
+          var o=obstacles[j];
+          if(x>o.left && x<o.left+o.width){
+            var ov=Math.min(y2,o.top+o.height)-Math.max(y1,o.top);
+            if(ov>0) score+=ov;
+          }
+        }
+      } else {
+        var y=a[1], x1=Math.min(a[0],b[0]), x2=Math.max(a[0],b[0]);
+        for(var k=0;k<obstacles.length;k++){
+          var o2=obstacles[k];
+          if(y>o2.top && y<o2.top+o2.height){
+            var ov2=Math.min(x2,o2.left+o2.width)-Math.max(x1,o2.left);
+            if(ov2>0) score+=ov2;
+          }
+        }
+      }
+    }
+    return score;
+  }
+
   function routeConnector(s, t, sRect, tRect, boxObstacles, pathObstacles, renderScale){
     var leg = 30 * renderScale;
     var clearance = Math.max(14*renderScale, leg*0.7);
@@ -520,7 +552,7 @@
       var span = t.y - s.y;
       // Scan the whole span, not just a handful of fixed fractions, so there is a real
       // chance of landing a corridor that clears every other arrow, not only the boxes.
-      var STEPS = 10;
+      var STEPS = 14;
       for(var k=1; k<STEPS; k++){
         candidates.push([ [s.x,s.y],[s.x, s.y+span*(k/STEPS)],[t.x, s.y+span*(k/STEPS)],[t.x,t.y] ]);
       }
@@ -531,7 +563,7 @@
     // Try several detour heights: if the row just below the source (or just above the
     // target) happens to run straight through some other function (or another arrow),
     // a taller/shorter detour may clear it instead of forcing a wider sideways swing.
-    [1, 1.5, 2, 2.6, 3.3].forEach(function(legMult){
+    [1, 1.6, 2.2, 2.8, 3.4].forEach(function(legMult){
       var belowY = s.y + leg*legMult;
       var aboveY = t.y - leg*legMult;
 
@@ -557,11 +589,21 @@
 
     var boxClear = candidates.filter(function(c){ return !pathBlocked(c, boxObstacles); });
     var pool = boxClear.length ? boxClear : candidates;
-    var fullyClear = pool.filter(function(c){ return !pathBlocked(c, pathObstacles); });
-    if(fullyClear.length) pool = fullyClear;
 
+    // Only test the shortest handful for full arrow-avoidance — bounds the expensive checks
+    // to a fixed cost regardless of how many candidates exist, keeping big diagrams smooth.
     pool = pool.slice().sort(function(a,b){ return pathLength(a) - pathLength(b); });
-    return pool[0];
+    var shortlist = pool.slice(0, 18);
+
+    var fullyClear = shortlist.filter(function(c){ return !pathBlocked(c, pathObstacles); });
+    if(fullyClear.length) return fullyClear[0]; // already length-sorted
+
+    // Nothing in the shortlist fully avoids other arrows: pick whichever overlaps the LEAST
+    // with them (not just whichever is shortest), so any visible collision stays small.
+    // (Score each candidate once — recomputing inside the sort comparator is much costlier.)
+    var scored = shortlist.map(function(c){ return { c:c, score:collisionScore(c, pathObstacles) }; });
+    scored.sort(function(a,b){ return a.score - b.score; }); // shortlist is already length-sorted
+    return scored[0].c;
   }
 
   function buildConnectorMarkup(rootEl, refEl, renderScale){
@@ -616,7 +658,7 @@
 
     // Segments of already-placed arrows become thin obstacles too, so later arrows steer
     // around earlier ones instead of running alongside or through them.
-    var pathPad = Math.max(9, view.arrowWidth * 2.2) * renderScale;
+    var pathPad = Math.max(11, view.arrowWidth * 2.6) * renderScale;
     function segmentsToRects(points){
       var rects = [];
       for(var i=0;i<points.length-1;i++){
@@ -780,15 +822,17 @@
     if(mainBox) mainBox.style.display = (!focusSet || focusSet.has('__main__')) ? '' : 'none';
 
     world.querySelectorAll('.func-node').forEach(function(node){
-      var visible = !focusSet || focusSet.has(node.dataset.fnode);
-      node.style.display = visible ? '' : 'none';
+      var id = node.dataset.fnode;
+      var inFocus = !focusSet || focusSet.has(id);
+      var res = findFunc(id);
+      var manuallyHidden = !!(res && res.func.hidden);
+      node.style.display = (inFocus && !manuallyHidden) ? '' : 'none';
     });
 
     world.querySelectorAll('.unit-diagram').forEach(function(sec){
-      if(!focusSet){ sec.style.display = ''; return; }
-      var anyVisible = Array.prototype.some.call(sec.querySelectorAll('.func-node'), function(n){
-        return n.style.display !== 'none';
-      });
+      var nodes = sec.querySelectorAll('.func-node');
+      if(nodes.length === 0){ sec.style.display = ''; return; }
+      var anyVisible = Array.prototype.some.call(nodes, function(n){ return n.style.display !== 'none'; });
       sec.style.display = anyVisible ? '' : 'none';
     });
   }
@@ -1223,6 +1267,11 @@
         return;
       case 'unit-color': setUnitColor(t.dataset.uid, PALETTE[+t.dataset.cidx]); return;
       case 'add-func': openAddFuncForm(t.dataset.cid); return;
+      case 'toggle-func-visible': {
+        var vres = findFunc(t.dataset.fid);
+        if(vres){ vres.func.hidden = !vres.func.hidden; saveState(); render(); }
+        return;
+      }
       case 'edit-func': openEditFuncForm(t.dataset.fid); return;
       case 'delete-func':
         if(confirm('Supprimer cette fonction/procédure ?')) deleteFunction(t.dataset.fid);

@@ -199,6 +199,8 @@
 
   .func-list{ display:flex; flex-direction:column; gap:6px; }
   .func-list-row{ display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-s); padding:6px 8px; }
+  .func-list-row.func-hidden{ opacity:.5; }
+  .func-list-row.func-hidden .func-name{ text-decoration:line-through; }
   .func-list-info{ min-width:0; flex:1 1 auto; display:flex; flex-direction:column; gap:1px; }
   .func-name{ font-family:var(--font-mono); font-weight:600; font-size:13px; }
   .func-sig{ font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
