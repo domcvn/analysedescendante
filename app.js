@@ -1209,13 +1209,12 @@
   // ---- Canvas panning (background drag) ----
   function initPanZoom(){
     var wrap = document.getElementById('canvas-wrap');
-    var activePointers = {}; // pointerId -> {x,y} — only pointers that started on empty canvas
-    var panState = null;     // single-finger pan in progress
-    var pinchState = null;   // two-finger pinch-zoom in progress
+    var activePointers = {}; // touch only: pointerId -> {x,y}, tracks fingers on empty canvas / (view mode) boxes
+    var panState = null;     // pan in progress (mouse/pen, or single-finger touch)
+    var pinchState = null;   // two-finger pinch-zoom in progress (touch only)
 
     function dist(p1, p2){ return Math.hypot(p1.x-p2.x, p1.y-p2.y); }
     function mid(p1, p2){ return { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 }; }
-
     function startPan(pointerId, x, y){
       panState = { pointerId:pointerId, startX:x, startY:y, startViewX:view.x, startViewY:view.y, moved:false };
     }
@@ -1233,30 +1232,42 @@
 
     wrap.addEventListener('pointerdown', function(e){
       if(e.target.closest('.zoom-controls, .focus-bar')) return;
-      if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
-      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
-      e.preventDefault();
-      deselectTouchArmed();
-      activePointers[e.pointerId] = { x:e.clientX, y:e.clientY };
-      try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
 
-      var ids = Object.keys(activePointers);
-      if(ids.length === 1){
-        panState = null; pinchState = null;
-        startPan(e.pointerId, e.clientX, e.clientY);
-        wrap.classList.add('panning');
-      } else if(ids.length === 2){
-        panState = null;
-        wrap.classList.remove('panning');
-        startPinch();
+      // ---- Touch: one finger pans, two fingers pinch-zoom. In Consultation mode this
+      // may start on a unit/function box too (nothing there is draggable); in Édition,
+      // boxes are left to the tap-then-drag handling instead. ----
+      if(e.pointerType === 'touch'){
+        if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
+        e.preventDefault();
+        deselectTouchArmed();
+        activePointers[e.pointerId] = { x:e.clientX, y:e.clientY };
+        try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+        var ids = Object.keys(activePointers);
+        if(ids.length === 1){
+          panState = null; pinchState = null;
+          startPan(e.pointerId, e.clientX, e.clientY);
+          wrap.classList.add('panning');
+        } else if(ids.length === 2){
+          panState = null;
+          wrap.classList.remove('panning');
+          startPinch();
+        }
+        return;
       }
+
+      // ---- Mouse / pen: unchanged, original single-pointer pan — boxes always excluded
+      // (dragging them is makeDraggable's job), no mode-dependent behavior at all. ----
+      if(e.target.closest('.unit-diagram, .func-node, .main-box')) return;
+      if(e.button !== undefined && e.button !== 0) return;
+      e.preventDefault();
+      try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+      startPan(e.pointerId, e.clientX, e.clientY);
+      wrap.classList.add('panning');
     });
 
     document.addEventListener('pointermove', function(ev){
-      if(!(ev.pointerId in activePointers)) return;
-      activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
-
-      if(pinchState){
+      if(ev.pointerType === 'touch' && pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
+        activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
         var p1 = activePointers[pinchState.id1], p2 = activePointers[pinchState.id2];
         if(!p1 || !p2) return;
         var newDist = dist(p1, p2);
@@ -1275,6 +1286,7 @@
         return;
       }
       if(panState && ev.pointerId === panState.pointerId){
+        if(ev.pointerType === 'touch') activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
         var dx = ev.clientX - panState.startX, dy = ev.clientY - panState.startY;
         if(!panState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) panState.moved = true;
         if(!panState.moved) return;
@@ -1283,30 +1295,38 @@
       }
     });
 
-    document.addEventListener('pointerup', onBackgroundPointerEnd);
-    document.addEventListener('pointercancel', onBackgroundPointerEnd);
-    function onBackgroundPointerEnd(ev){
-      if(!(ev.pointerId in activePointers)) return;
-      delete activePointers[ev.pointerId];
-      try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
-      var ids = Object.keys(activePointers);
-
-      if(panState && ev.pointerId === panState.pointerId){
-        wrap.classList.remove('panning');
-        if(panState.moved) saveViewDebounced();
-        panState = null;
-      }
-      if(pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
-        saveViewDebounced();
-        pinchState = null;
-        if(ids.length === 1){
-          // one finger remains on screen: resume panning from here instead of jumping
-          var p = activePointers[ids[0]];
-          startPan(+ids[0], p.x, p.y);
-          panState.moved = true;
-          wrap.classList.add('panning');
+    document.addEventListener('pointerup', onPointerEnd);
+    document.addEventListener('pointercancel', onPointerEnd);
+    function onPointerEnd(ev){
+      if(ev.pointerType === 'touch'){
+        if(!(ev.pointerId in activePointers)) return;
+        delete activePointers[ev.pointerId];
+        try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
+        var ids = Object.keys(activePointers);
+        if(panState && ev.pointerId === panState.pointerId){
+          wrap.classList.remove('panning');
+          if(panState.moved) saveViewDebounced();
+          panState = null;
         }
+        if(pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
+          saveViewDebounced();
+          pinchState = null;
+          if(ids.length === 1){
+            // one finger remains on screen: resume panning from here instead of jumping
+            var p = activePointers[ids[0]];
+            startPan(+ids[0], p.x, p.y);
+            panState.moved = true;
+            wrap.classList.add('panning');
+          }
+        }
+        return;
       }
+      // mouse / pen
+      if(!panState || ev.pointerId !== panState.pointerId) return;
+      try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
+      wrap.classList.remove('panning');
+      if(panState.moved) saveViewDebounced();
+      panState = null;
     }
 
     wrap.addEventListener('wheel', function(e){
