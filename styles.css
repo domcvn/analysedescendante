@@ -293,6 +293,9 @@
     overflow:hidden;
   }
   .unit-diagram.dragging, .func-node.dragging{ opacity:.82; box-shadow:var(--shadow-2); z-index:2; }
+  .unit-diagram.touch-armed, .func-node.touch-armed .func-box, .main-box.touch-armed{
+    outline:2.5px solid var(--focus); outline-offset:2px;
+  }
 
   .unit-diagram-head{ padding:18px 0 14px; cursor:grab; touch-action:none; user-select:none; }
   .unit-diagram-head:active{ cursor:grabbing; }
@@ -338,10 +341,10 @@
     #sidebar{
       position:fixed; top:0; left:0; bottom:0;
       padding-top: calc(64px + env(safe-area-inset-top,0px));
-      width:88% !important; max-width:360px !important; z-index:30; box-shadow:var(--shadow-2);
+      width:88% !important; max-width:360px !important; z-index:18; box-shadow:var(--shadow-2);
     }
     .sidebar-resize-handle{ display:none; }
-    #app:not(.sidebar-collapsed)::after{ content:''; position:fixed; inset:0; background:rgba(10,12,20,.35); z-index:25; }
+    #app:not(.sidebar-collapsed)::after{ content:''; position:fixed; inset:0; background:rgba(10,12,20,.35); z-index:16; }
     #app.mode-view::after{ display:none; }
     .label-desktop{ display:none; }
     .brand p{ display:none; }

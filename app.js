@@ -34,6 +34,27 @@
   if(typeof view.sidebarWidth !== 'number') view.sidebarWidth = 380;
   var focusId = null;   // id of the function/main currently isolated in view mode, or null
   var focusSet = null;  // Set of ids visible while focused (the function itself + callers + callees)
+  var armedElId = null; // touch only: an element must be tapped once to "arm" it before it can be dragged
+
+  function setArmed(key, el){
+    armedElId = key;
+    document.querySelectorAll('.touch-armed').forEach(function(n){ n.classList.remove('touch-armed'); });
+    if(el) el.classList.add('touch-armed');
+  }
+  function deselectTouchArmed(){
+    if(armedElId === null) return;
+    armedElId = null;
+    document.querySelectorAll('.touch-armed').forEach(function(n){ n.classList.remove('touch-armed'); });
+  }
+  function reapplyArmedHighlight(){
+    if(armedElId === null) return;
+    var world = document.getElementById('canvas-world');
+    if(!world) return;
+    var el = (armedElId === '__main__')
+      ? world.querySelector('.main-box')
+      : (world.querySelector('.unit-diagram[data-uid="'+cssEscape(armedElId)+'"]') || world.querySelector('.func-node[data-fnode="'+cssEscape(armedElId)+'"]'));
+    if(el) el.classList.add('touch-armed');
+  }
 
   function uid(prefix){ return prefix + (state.nextId++); }
   function esc(s){
@@ -496,6 +517,7 @@
     applyTransform();
     attachDragHandlers();
     applyFocusVisibility();
+    reapplyArmedHighlight();
 
     var isEmpty = state.units.length===0 && state.main.calls.length===0 && state.main.functions.length===0;
     var emptyEl = document.getElementById('empty-state');
@@ -862,6 +884,7 @@
     if(mode !== 'edit' && mode !== 'view') return;
     view.mode = mode;
     saveViewDebounced();
+    deselectTouchArmed();
     if(mode === 'edit'){
       exitFocus();
       document.getElementById('app').classList.remove('sidebar-collapsed');
@@ -995,7 +1018,18 @@
   function makeDraggable(handleEl, movedEl, onMove, onEnd, getBounds, resolveCollision){
     handleEl.addEventListener('pointerdown', function(e){
       if(view.mode !== 'edit') return;
-      if(e.button !== undefined && e.button !== 0) return;
+      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
+
+      if(e.pointerType === 'touch'){
+        var armKey = movedEl.classList.contains('main-box') ? '__main__' : (movedEl.dataset.uid || movedEl.dataset.fnode);
+        if(armedElId !== armKey){
+          e.preventDefault();
+          e.stopPropagation();
+          setArmed(armKey, movedEl);
+          return;
+        }
+      }
+
       var startX = e.clientX, startY = e.clientY;
       var startLeft = parseFloat(movedEl.style.left) || 0;
       var startTop = parseFloat(movedEl.style.top) || 0;
@@ -1169,34 +1203,104 @@
   // ---- Canvas panning (background drag) ----
   function initPanZoom(){
     var wrap = document.getElementById('canvas-wrap');
+    var activePointers = {}; // pointerId -> {x,y} — only pointers that started on empty canvas
+    var panState = null;     // single-finger pan in progress
+    var pinchState = null;   // two-finger pinch-zoom in progress
+
+    function dist(p1, p2){ return Math.hypot(p1.x-p2.x, p1.y-p2.y); }
+    function mid(p1, p2){ return { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 }; }
+
+    function startPan(pointerId, x, y){
+      panState = { pointerId:pointerId, startX:x, startY:y, startViewX:view.x, startViewY:view.y, moved:false };
+    }
+    function startPinch(){
+      var ids = Object.keys(activePointers);
+      var p1 = activePointers[ids[0]], p2 = activePointers[ids[1]];
+      pinchState = {
+        id1:ids[0], id2:ids[1],
+        startDist: dist(p1,p2) || 1,
+        startScale: view.scale,
+        startMid: mid(p1,p2),
+        startViewX: view.x, startViewY: view.y
+      };
+    }
 
     wrap.addEventListener('pointerdown', function(e){
       if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
-      if(e.button !== undefined && e.button !== 0) return;
+      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
-      var startX = e.clientX, startY = e.clientY;
-      var startViewX = view.x, startViewY = view.y;
-      var moved = false;
+      deselectTouchArmed();
+      activePointers[e.pointerId] = { x:e.clientX, y:e.clientY };
       try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
-      wrap.classList.add('panning');
 
-      function onMove(ev){
-        var dx = ev.clientX - startX, dy = ev.clientY - startY;
-        if(!moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) moved = true;
-        if(!moved) return;
-        view.x = startViewX + dx; view.y = startViewY + dy;
+      var ids = Object.keys(activePointers);
+      if(ids.length === 1){
+        panState = null; pinchState = null;
+        startPan(e.pointerId, e.clientX, e.clientY);
+        wrap.classList.add('panning');
+      } else if(ids.length === 2){
+        panState = null;
+        wrap.classList.remove('panning');
+        startPinch();
+      }
+    });
+
+    document.addEventListener('pointermove', function(ev){
+      if(!(ev.pointerId in activePointers)) return;
+      activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
+
+      if(pinchState){
+        var p1 = activePointers[pinchState.id1], p2 = activePointers[pinchState.id2];
+        if(!p1 || !p2) return;
+        var newDist = dist(p1, p2);
+        var factor = newDist / pinchState.startDist;
+        var newScale = Math.min(2.5, Math.max(0.25, pinchState.startScale * factor));
+        var rect = wrap.getBoundingClientRect();
+        var startMx = pinchState.startMid.x - rect.left, startMy = pinchState.startMid.y - rect.top;
+        var mp = mid(p1, p2);
+        var mx = mp.x - rect.left, my = mp.y - rect.top;
+        var worldX = (startMx - pinchState.startViewX) / pinchState.startScale;
+        var worldY = (startMy - pinchState.startViewY) / pinchState.startScale;
+        view.x = mx - worldX * newScale;
+        view.y = my - worldY * newScale;
+        view.scale = newScale;
+        applyTransform();
+        return;
+      }
+      if(panState && ev.pointerId === panState.pointerId){
+        var dx = ev.clientX - panState.startX, dy = ev.clientY - panState.startY;
+        if(!panState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) panState.moved = true;
+        if(!panState.moved) return;
+        view.x = panState.startViewX + dx; view.y = panState.startViewY + dy;
         applyTransform();
       }
-      function onUp(){
-        try{ wrap.releasePointerCapture(e.pointerId); }catch(err){}
-        wrap.classList.remove('panning');
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        if(moved) saveViewDebounced();
-      }
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
     });
+
+    document.addEventListener('pointerup', onBackgroundPointerEnd);
+    document.addEventListener('pointercancel', onBackgroundPointerEnd);
+    function onBackgroundPointerEnd(ev){
+      if(!(ev.pointerId in activePointers)) return;
+      delete activePointers[ev.pointerId];
+      try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
+      var ids = Object.keys(activePointers);
+
+      if(panState && ev.pointerId === panState.pointerId){
+        wrap.classList.remove('panning');
+        if(panState.moved) saveViewDebounced();
+        panState = null;
+      }
+      if(pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
+        saveViewDebounced();
+        pinchState = null;
+        if(ids.length === 1){
+          // one finger remains on screen: resume panning from here instead of jumping
+          var p = activePointers[ids[0]];
+          startPan(+ids[0], p.x, p.y);
+          panState.moved = true;
+          wrap.classList.add('panning');
+        }
+      }
+    }
 
     wrap.addEventListener('wheel', function(e){
       e.preventDefault();
@@ -1205,11 +1309,21 @@
       zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
     }, { passive:false });
 
-    wrap.addEventListener('dblclick', function(e){
+    // Double-click (mouse) and double-tap (touch) both isolate a function via the same
+    // pointerup-based detector — touch doesn't reliably synthesize a native dblclick.
+    var lastTap = { time:0, id:null };
+    document.addEventListener('pointerup', function(e){
       if(view.mode !== 'view') return;
       var target = e.target.closest('[data-fid]');
-      if(!target) return;
-      enterFocus(target.dataset.fid);
+      if(!target){ lastTap = { time:0, id:null }; return; }
+      var now = Date.now();
+      var fid = target.dataset.fid;
+      if(lastTap.id === fid && (now - lastTap.time) < 400){
+        enterFocus(fid);
+        lastTap = { time:0, id:null };
+      } else {
+        lastTap = { time:now, id:fid };
+      }
     });
 
     applyTransform();
