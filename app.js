@@ -27,10 +27,11 @@
   var funcForm = null;
   var pendingLayout = false;
   var downloadsCapPromise = null;
-  var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1, mode:'edit' };
+  var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1, mode:'edit', sidebarWidth:380 };
   if(typeof view.arrowWidth !== 'number') view.arrowWidth = 2;
   if(typeof view.textScale !== 'number') view.textScale = 1;
   if(view.mode !== 'edit' && view.mode !== 'view') view.mode = 'edit';
+  if(typeof view.sidebarWidth !== 'number') view.sidebarWidth = 380;
   var focusId = null;   // id of the function/main currently isolated in view mode, or null
   var focusSet = null;  // Set of ids visible while focused (the function itself + callers + callees)
 
@@ -62,6 +63,7 @@
     if(f.outputs == null) f.outputs = '';
     if(!Array.isArray(f.calls)) f.calls = [];
     if(typeof f.hidden !== 'boolean') f.hidden = false;
+    if(typeof f.notes !== 'string') f.notes = '';
   }
   function migrate(s){
     if(!s || !Array.isArray(s.units)) return null;
@@ -186,8 +188,17 @@
     if(funcForm && funcForm.editingId===funcId) funcForm = null;
     saveState(); render();
   }
+  function reorderFunc(containerId, fromIndex, toIndex){
+    var container = getContainer(containerId);
+    if(!container) return;
+    var arr = container.functions;
+    if(fromIndex<0 || fromIndex>=arr.length || toIndex<0 || toIndex>=arr.length || fromIndex===toIndex) return;
+    var item = arr.splice(fromIndex, 1)[0];
+    arr.splice(toIndex, 0, item);
+    saveState(); renderSidebar();
+  }
   function openAddFuncForm(containerId){
-    funcForm = { containerId:containerId, editingId:null, name:'', inputs:'', outputs:'', calls:new Set() };
+    funcForm = { containerId:containerId, editingId:null, name:'', inputs:'', outputs:'', notes:'', calls:new Set() };
     renderSidebar();
   }
   function openEditFuncForm(funcId){
@@ -195,7 +206,8 @@
     if(!res) return;
     funcForm = {
       containerId: res.containerId, editingId: funcId, name: res.func.name,
-      inputs: res.func.inputs || '', outputs: res.func.outputs || '', calls: new Set(res.func.calls)
+      inputs: res.func.inputs || '', outputs: res.func.outputs || '', notes: res.func.notes || '',
+      calls: new Set(res.func.calls)
     };
     renderSidebar();
   }
@@ -206,17 +218,18 @@
     if(!name){ alert('Le nom de la fonction/procédure est requis.'); return; }
     var inputs = (funcForm.inputs || '').trim();
     var outputs = (funcForm.outputs || '').trim();
+    var notes = (funcForm.notes || '').trim();
     var calls = Array.from(funcForm.calls);
 
     if(funcForm.editingId){
       var res = findFunc(funcForm.editingId);
-      if(res){ res.func.name = name; res.func.inputs = inputs; res.func.outputs = outputs; res.func.calls = calls; }
+      if(res){ res.func.name = name; res.func.inputs = inputs; res.func.outputs = outputs; res.func.notes = notes; res.func.calls = calls; }
     } else {
       var container = getContainer(funcForm.containerId);
       if(container){
         var fi = container.functions.length;
         var pos = defaultPositionForNew(funcForm.containerId, fi);
-        container.functions.push({ id: uid('f'), name:name, inputs:inputs, outputs:outputs, calls:calls, x:pos.x, y:pos.y });
+        container.functions.push({ id: uid('f'), name:name, inputs:inputs, outputs:outputs, notes:notes, calls:calls, x:pos.x, y:pos.y });
       }
     }
     funcForm = null;
@@ -251,13 +264,22 @@
   }
 
   function renderFuncSection(containerId, containerFunctions){
-    var listHtml = containerFunctions.length===0
-      ? '<p class="hint small">Aucune fonction.</p>'
-      : '<div class="func-list">' + containerFunctions.map(function(f){ return renderFuncRow(f); }).join('') + '</div>';
-    var formHtml = (funcForm && funcForm.containerId===containerId) ? renderFuncForm() : '';
+    var listHtml;
+    if(containerFunctions.length===0){
+      listHtml = '<p class="hint small">Aucune fonction.</p>';
+    } else {
+      var items = containerFunctions.map(function(f){
+        var row = renderFuncRow(f);
+        var details = renderFuncDetails(f);
+        var editHtml = (funcForm && funcForm.editingId === f.id) ? renderFuncForm() : '';
+        return '<div class="func-item" data-fid="'+f.id+'">'+row+details+editHtml+'</div>';
+      }).join('');
+      listHtml = '<div class="func-list" data-cid="'+containerId+'">' + items + '</div>';
+    }
+    var addHtml = (funcForm && funcForm.containerId===containerId && !funcForm.editingId) ? renderFuncForm() : '';
     return listHtml +
       '<button class="btn btn-ghost add-func-btn" data-action="add-func" data-cid="'+containerId+'">+ Fonction / procédure</button>' +
-      formHtml;
+      addHtml;
   }
 
   function renderSidebar(){
@@ -281,6 +303,71 @@
         '<div class="section-head"><h2>Unités</h2><button class="btn btn-primary" data-action="add-unit">+ Unité</button></div>'+
         unitsHtml+
       '</div>';
+
+    attachFuncReorderHandlers();
+  }
+
+  // ---- Drag-to-reorder functions/procedures within the sidebar (each unit's own list,
+  // or the main program's own list — never across containers) ----
+  function attachFuncReorderHandlers(){
+    document.querySelectorAll('.func-list').forEach(function(listEl){
+      var containerId = listEl.dataset.cid;
+      listEl.querySelectorAll(':scope > .func-item > .func-list-row > .func-drag-handle').forEach(function(handle){
+        handle.addEventListener('pointerdown', function(e){
+          if(e.button !== undefined && e.button !== 0) return;
+          e.preventDefault();
+          var item = handle.closest('.func-item');
+          if(!item) return;
+          var items = Array.prototype.slice.call(listEl.querySelectorAll(':scope > .func-item'));
+          var startIndex = items.indexOf(item);
+          if(startIndex < 0 || items.length < 2) return;
+
+          var rects = items.map(function(it){ return it.getBoundingClientRect(); });
+          var startY = e.clientY;
+          var currentIndex = startIndex;
+          var moved = false;
+
+          try{ handle.setPointerCapture(e.pointerId); }catch(err){}
+
+          function onMove(ev){
+            var dy = ev.clientY - startY;
+            if(!moved && Math.abs(dy) > 3) moved = true;
+            if(!moved) return;
+            item.classList.add('func-item-dragging');
+            item.style.transform = 'translateY(' + dy + 'px)';
+
+            var draggedCenter = rects[startIndex].top + rects[startIndex].height/2 + dy;
+            var idx = 0;
+            items.forEach(function(it, i){
+              if(i === startIndex) return;
+              var center = rects[i].top + rects[i].height/2;
+              if(center < draggedCenter) idx++;
+            });
+            currentIndex = Math.max(0, Math.min(items.length - 1, idx));
+
+            items.forEach(function(it, i){
+              if(i === startIndex) return;
+              var shift = 0;
+              if(currentIndex < startIndex && i >= currentIndex && i < startIndex) shift = rects[startIndex].height;
+              else if(currentIndex > startIndex && i > startIndex && i <= currentIndex) shift = -rects[startIndex].height;
+              it.style.transform = shift ? 'translateY(' + shift + 'px)' : '';
+            });
+          }
+          function onUp(){
+            try{ handle.releasePointerCapture(e.pointerId); }catch(err){}
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            items.forEach(function(it){ it.style.transform = ''; });
+            item.classList.remove('func-item-dragging');
+            if(moved && currentIndex !== startIndex){
+              reorderFunc(containerId, startIndex, currentIndex);
+            }
+          }
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+        });
+      });
+    });
   }
 
   function renderUnitCard(u){
@@ -312,12 +399,30 @@
     var outs = (f.outputs && f.outputs.trim()) ? f.outputs.trim().replace(/\n+/g, ', ') : '/';
     return ins + ' → ' + outs;
   }
+  function renderFuncDetails(f){
+    var insText = (f.inputs && f.inputs.trim()) ? esc(f.inputs.trim()).replace(/\n/g,'<br>') : '/';
+    var outsText = (f.outputs && f.outputs.trim()) ? esc(f.outputs.trim()).replace(/\n/g,'<br>') : '/';
+    var notesText = (f.notes && f.notes.trim())
+      ? esc(f.notes.trim()).replace(/\n/g,'<br>')
+      : '<span class="func-details-empty">Aucun commentaire.</span>';
+    return (
+      '<details class="func-details">'+
+        '<summary>Détails (entrées, sorties, commentaire)</summary>'+
+        '<div class="func-details-body">'+
+          '<div class="func-details-row"><span class="func-details-label">Entrées</span><div class="func-details-value">'+insText+'</div></div>'+
+          '<div class="func-details-row"><span class="func-details-label">Sorties</span><div class="func-details-value">'+outsText+'</div></div>'+
+          '<div class="func-details-row"><span class="func-details-label">Commentaire</span><div class="func-details-value prose">'+notesText+'</div></div>'+
+        '</div>'+
+      '</details>'
+    );
+  }
   function renderFuncRow(f){
     var hiddenCls = f.hidden ? ' func-hidden' : '';
     var eyeIcon = f.hidden ? '⦸' : '👁';
     var eyeTitle = f.hidden ? 'Afficher dans le schéma' : 'Masquer du schéma';
     return (
       '<div class="func-list-row'+hiddenCls+'">'+
+        '<span class="func-drag-handle" title="Glisser pour réordonner">⠿</span>'+
         '<div class="func-list-info">'+
           '<span class="func-name">'+esc(f.name)+'</span>'+
           '<span class="func-sig">'+esc(sigText(f))+'</span>'+
@@ -341,6 +446,9 @@
         '<p class="hint small">Avec noms : <code>a, b : Naturel</code> (une ligne par groupe). Sans noms : un type par ligne, ex. <code>Naturel*3</code> puis, à la ligne suivante, <code>TUser</code>. Laissez vide s’il n’y en a pas.</p>'+
         '<label class="field"><span>Sorties</span><textarea rows="2" placeholder="gagné : Booléen" data-form="outputs">'+esc(funcForm.outputs)+'</textarea></label>'+
         '<p class="hint small">Même notation que les entrées.</p>'+
+        '<label class="field"><span>Commentaire <span class="hint small" style="display:inline">(panneau seulement, jamais affiché sur le schéma)</span></span>'+
+          '<textarea class="func-notes-input" rows="4" placeholder="Expliquez en détail ce que fait cette fonction/procédure : algorithme, cas particuliers, hypothèses…" data-form="notes">'+esc(funcForm.notes)+'</textarea>'+
+        '</label>'+
         '<div class="calls-block"><span class="calls-label">Appelle</span>'+callsHtml+'</div>'+
         '<div class="form-actions">'+
           '<button class="btn btn-primary" data-action="save-func">'+(isEdit?'Enregistrer':'Ajouter')+'</button>'+
@@ -650,15 +758,15 @@
       var count = anchorCount[key] || 1;
       var idx = anchorIndex[key] || 0;
       anchorIndex[key] = idx + 1;
-      var spacing = Math.max(13, view.arrowWidth * 4) * renderScale;
+      var spacing = Math.max(18, view.arrowWidth * 5) * renderScale;
       var raw = (idx - (count - 1)/2) * spacing;
-      var cap = 260 * renderScale;
+      var cap = 340 * renderScale;
       return Math.max(-cap, Math.min(cap, raw));
     }
 
     // Segments of already-placed arrows become thin obstacles too, so later arrows steer
     // around earlier ones instead of running alongside or through them.
-    var pathPad = Math.max(11, view.arrowWidth * 2.6) * renderScale;
+    var pathPad = Math.max(14, view.arrowWidth * 3) * renderScale;
     function segmentsToRects(points){
       var rects = [];
       for(var i=0;i<points.length-1;i++){
@@ -1026,6 +1134,38 @@
     });
   }
 
+  // ---- Sidebar resize (drag the handle between the panel and the canvas) ----
+  function initSidebarResize(){
+    var handle = document.getElementById('sidebar-resize-handle');
+    var sidebar = document.getElementById('sidebar');
+    if(!handle || !sidebar) return;
+    handle.addEventListener('pointerdown', function(e){
+      if(e.button !== undefined && e.button !== 0) return;
+      e.preventDefault();
+      var startX = e.clientX;
+      var startW = sidebar.getBoundingClientRect().width;
+      var minW = 260, maxW = Math.min(720, window.innerWidth * 0.7);
+      try{ handle.setPointerCapture(e.pointerId); }catch(err){}
+      handle.classList.add('resizing');
+
+      function onMove(ev){
+        var w = Math.max(minW, Math.min(maxW, startW + (ev.clientX - startX)));
+        sidebar.style.width = w + 'px';
+        view.sidebarWidth = w;
+        scheduleLayout();
+      }
+      function onUp(){
+        try{ handle.releasePointerCapture(e.pointerId); }catch(err){}
+        handle.classList.remove('resizing');
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        saveViewDebounced();
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
+  }
+
   // ---- Canvas panning (background drag) ----
   function initPanZoom(){
     var wrap = document.getElementById('canvas-wrap');
@@ -1296,6 +1436,7 @@
     if(t.dataset.form === 'name'){ funcForm.name = t.value; return; }
     if(t.dataset.form === 'inputs'){ funcForm.inputs = t.value; return; }
     if(t.dataset.form === 'outputs'){ funcForm.outputs = t.value; return; }
+    if(t.dataset.form === 'notes'){ funcForm.notes = t.value; return; }
   });
 
   document.addEventListener('change', function(e){
@@ -1341,5 +1482,8 @@
 
   initTheme();
   initPanZoom();
+  var sidebarEl = document.getElementById('sidebar');
+  if(sidebarEl) sidebarEl.style.width = view.sidebarWidth + 'px';
+  initSidebarResize();
   render();
 })();
