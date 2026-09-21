@@ -30,6 +30,7 @@
 
   var state = loadState() || defaultState();
   var funcForm = null;
+  var collapsedSidebarSections = new Set(); // unit ids + '__main__': collapsed in the sidebar (session only)
   var pendingLayout = false;
   var downloadsCapPromise = null;
   var view = loadView() || { x:80, y:60, scale:1, arrowWidth:2, textScale:1, mode:'edit', sidebarWidth:380 };
@@ -37,6 +38,8 @@
   if(typeof view.textScale !== 'number') view.textScale = 1;
   if(view.mode !== 'edit' && view.mode !== 'view') view.mode = 'edit';
   if(typeof view.sidebarWidth !== 'number') view.sidebarWidth = 380;
+  if(typeof view.showArrows !== 'boolean') view.showArrows = true;
+  var viewFilterUnits = null; // Set of visible unit ids + '__main__', or null = show all (session only)
   var focusId = null;   // id of the function/main currently isolated in view mode, or null
   var focusSet = null;  // Set of ids visible while focused (the function itself + callers + callees)
   var armedElId = null; // touch only: an element must be tapped once to "arm" it before it can be dragged
@@ -264,6 +267,8 @@
   function resetAll(){
     state = defaultState();
     funcForm = null;
+    viewFilterUnits = null;
+    collapsedSidebarSections.clear();
     saveState(); render();
   }
 
@@ -316,14 +321,24 @@
       ? '<p class="hint">Ajoutez une unité pour commencer votre analyse.</p>'
       : state.units.map(function(u){ return renderUnitCard(u); }).join('');
 
+    var mainCollapsed = collapsedSidebarSections.has('__main__');
+    var mainChevron = mainCollapsed ? '▸' : '▾';
+    var mainBodyHtml = mainCollapsed
+      ? '<p class="hint small">'+state.main.functions.length+' fonction'+(state.main.functions.length!==1?'s':'')+' propre'+(state.main.functions.length!==1?'s':'')+'.</p>'
+      : (
+          '<label class="field"><span>Nom</span><input type="text" value="'+esc(state.main.name)+'" data-action="main-name"/></label>'+
+          '<div class="calls-block"><span class="calls-label">Appelle</span>'+mainCallsHtml+'</div>'+
+          '<div class="calls-block"><span class="calls-label">Procédures/fonctions propres au programme principal</span>'+
+            renderFuncSection('__main__', state.main.functions)+
+          '</div>'
+        );
+
     sb.innerHTML =
       '<div class="side-section main-card">'+
-        '<h2>Programme principal</h2>'+
-        '<label class="field"><span>Nom</span><input type="text" value="'+esc(state.main.name)+'" data-action="main-name"/></label>'+
-        '<div class="calls-block"><span class="calls-label">Appelle</span>'+mainCallsHtml+'</div>'+
-        '<div class="calls-block"><span class="calls-label">Procédures/fonctions propres au programme principal</span>'+
-          renderFuncSection('__main__', state.main.functions)+
+        '<div class="section-head">'+
+          '<h2><button class="icon-btn plain collapse-toggle" data-action="toggle-sidebar-collapse" data-uid="__main__" title="'+(mainCollapsed?'Développer':'Réduire')+'">'+mainChevron+'</button> Programme principal</h2>'+
         '</div>'+
+        mainBodyHtml+
       '</div>'+
       '<div class="side-section">'+
         '<div class="section-head"><h2>Unités</h2><button class="btn btn-primary" data-action="add-unit">+ Unité</button></div>'+
@@ -397,25 +412,34 @@
   }
 
   function renderUnitCard(u){
+    var collapsed = collapsedSidebarSections.has(u.id);
+    var chevron = collapsed ? '▸' : '▾';
     var swatches = PALETTE.map(function(c){
       var active = (c.border===u.color.border) ? ' active' : '';
       var idx = PALETTE.indexOf(c);
       return '<button class="swatch'+active+'" style="background:'+c.bg+';border-color:'+c.border+'" data-action="unit-color" data-uid="'+u.id+'" data-cidx="'+idx+'" title="Couleur de l’unité"></button>';
     }).join('');
 
+    var bodyHtml = collapsed
+      ? '<p class="hint small">'+u.functions.length+' fonction'+(u.functions.length!==1?'s':'')+'.</p>'
+      : (
+          '<textarea class="unit-role-input" rows="2" placeholder="Rôle de l’unité (note interne, non affichée sur le schéma)" data-action="unit-role" data-uid="'+u.id+'">'+esc(u.role)+'</textarea>'+
+          '<div class="palette-row">'+swatches+'</div>'+
+          '<details class="tad-details"><summary>TAD (types abstraits de données)</summary>'+
+            '<textarea class="tad-input" rows="6" placeholder="ex. TTree = structure ... finstructure" data-action="unit-tads" data-uid="'+u.id+'">'+esc(u.tads)+'</textarea>'+
+          '</details>'+
+          '<p class="hint canvas-note">Le rôle et les TAD sont des notes de travail : ils n’apparaissent pas sur le schéma, seules les fonctions/procédures y figurent.</p>'+
+          renderFuncSection(u.id, u.functions)
+        );
+
     return (
       '<div class="unit-card" style="--u-bg:'+u.color.bg+';--u-border:'+u.color.border+'">'+
         '<div class="unit-card-head">'+
+          '<button class="icon-btn plain collapse-toggle" data-action="toggle-sidebar-collapse" data-uid="'+u.id+'" title="'+(collapsed?'Développer':'Réduire')+'">'+chevron+'</button>'+
           '<input class="unit-name-input" type="text" value="'+esc(u.name)+'" placeholder="Nom de l’unité" data-action="unit-name" data-uid="'+u.id+'"/>'+
           '<button class="icon-btn danger" data-action="delete-unit" data-uid="'+u.id+'" title="Supprimer l’unité">✕</button>'+
         '</div>'+
-        '<textarea class="unit-role-input" rows="2" placeholder="Rôle de l’unité (note interne, non affichée sur le schéma)" data-action="unit-role" data-uid="'+u.id+'">'+esc(u.role)+'</textarea>'+
-        '<div class="palette-row">'+swatches+'</div>'+
-        '<details class="tad-details"><summary>TAD (types abstraits de données)</summary>'+
-          '<textarea class="tad-input" rows="6" placeholder="ex. TTree = structure ... finstructure" data-action="unit-tads" data-uid="'+u.id+'">'+esc(u.tads)+'</textarea>'+
-        '</details>'+
-        '<p class="hint canvas-note">Le rôle et les TAD sont des notes de travail : ils n’apparaissent pas sur le schéma, seules les fonctions/procédures y figurent.</p>'+
-        renderFuncSection(u.id, u.functions)+
+        bodyHtml+
       '</div>'
     );
   }
@@ -727,7 +751,14 @@
 
     // Only test the shortest handful for full arrow-avoidance — bounds the expensive checks
     // to a fixed cost regardless of how many candidates exist, keeping big diagrams smooth.
-    pool = pool.slice().sort(function(a,b){ return pathLength(a) - pathLength(b); });
+    // Lengths are compared in renderScale-sized buckets (not exact pixels) so that tiny
+    // sub-pixel differences between zoom levels never flip which candidate "wins" — ties
+    // fall back to candidate-generation order, which is itself zoom-independent, so the
+    // chosen route stays put while zooming instead of jumping between near-tied options.
+    var lenBucket = Math.max(3, 6 * renderScale);
+    pool = pool.slice().sort(function(a,b){
+      return Math.round(pathLength(a)/lenBucket) - Math.round(pathLength(b)/lenBucket);
+    });
     var shortlist = pool.slice(0, 18);
 
     var fullyClear = shortlist.filter(function(c){ return !pathBlocked(c, pathObstacles); });
@@ -736,8 +767,9 @@
     // Nothing in the shortlist fully avoids other arrows: pick whichever overlaps the LEAST
     // with them (not just whichever is shortest), so any visible collision stays small.
     // (Score each candidate once — recomputing inside the sort comparator is much costlier.)
+    var scoreBucket = Math.max(3, 6 * renderScale);
     var scored = shortlist.map(function(c){ return { c:c, score:collisionScore(c, pathObstacles) }; });
-    scored.sort(function(a,b){ return a.score - b.score; }); // shortlist is already length-sorted
+    scored.sort(function(a,b){ return Math.round(a.score/scoreBucket) - Math.round(b.score/scoreBucket); });
     return scored[0].c;
   }
 
@@ -842,7 +874,8 @@
     svg.setAttribute('width', cw);
     svg.setAttribute('height', ch);
     svg.setAttribute('viewBox', '0 0 '+cw+' '+ch);
-    svg.innerHTML = buildConnectorMarkup(world, wrap, view.scale);
+    var arrowsOn = view.mode !== 'view' || view.showArrows;
+    svg.innerHTML = arrowsOn ? buildConnectorMarkup(world, wrap, view.scale) : '';
   }
 
   // ---- View: pan & zoom ----
@@ -898,9 +931,9 @@
       document.getElementById('app').classList.add('sidebar-collapsed');
     }
     document.getElementById('app').classList.toggle('mode-view', mode === 'view');
-    document.querySelectorAll('.mode-btn').forEach(function(b){
-      b.dataset.active = (b.dataset.action === 'mode-'+mode) ? 'true' : 'false';
-    });
+    document.querySelectorAll('.dropdown-menu').forEach(function(m){ m.hidden = true; });
+    var modeSelectEl = document.querySelector('.mode-select');
+    if(modeSelectEl) modeSelectEl.value = mode;
     render();
   }
 
@@ -949,23 +982,51 @@
     scheduleLayout();
   }
 
+  // ---- Consultation-mode "Affichage" dropdown: arrow visibility + per-unit filter ----
+  function renderViewOptionsPanel(){
+    var box = document.getElementById('view-options-units');
+    var arrowsCb = document.querySelector('[data-action="toggle-show-arrows"]');
+    if(arrowsCb) arrowsCb.checked = view.showArrows;
+    if(!box) return;
+    var items = [{ id:'__main__', name: state.main.name || 'Programme principal' }]
+      .concat(state.units.map(function(u){ return { id:u.id, name: u.name || 'Unité sans nom' }; }));
+    box.innerHTML = items.map(function(it){
+      var checked = (!viewFilterUnits || viewFilterUnits.has(it.id)) ? ' checked' : '';
+      return '<label class="dropdown-checkbox"><input type="checkbox" data-action="toggle-unit-filter" data-uid="'+it.id+'"'+checked+'/> '+esc(it.name)+'</label>';
+    }).join('');
+  }
+  function toggleUnitFilter(id){
+    var allIds = ['__main__'].concat(state.units.map(function(u){ return u.id; }));
+    if(viewFilterUnits === null) viewFilterUnits = new Set(allIds);
+    if(viewFilterUnits.has(id)) viewFilterUnits.delete(id); else viewFilterUnits.add(id);
+    if(viewFilterUnits.size === allIds.length) viewFilterUnits = null; // back to "show all"
+    applyFocusVisibility();
+    drawConnectors();
+    scheduleLayout();
+  }
+
   // Shows/hides DOM nodes to match focusSet — layoutUnitBox and buildConnectorMarkup both
   // skip hidden nodes, so a focused view never measures or routes around something unseen.
   function applyFocusVisibility(){
     var world = document.getElementById('canvas-world');
     if(!world) return;
+    var mainAllowed = !viewFilterUnits || viewFilterUnits.has('__main__');
     var mainBox = world.querySelector('.main-box');
-    if(mainBox) mainBox.style.display = (!focusSet || focusSet.has('__main__')) ? '' : 'none';
+    if(mainBox) mainBox.style.display = ((!focusSet || focusSet.has('__main__')) && mainAllowed) ? '' : 'none';
 
     world.querySelectorAll('.func-node').forEach(function(node){
       var id = node.dataset.fnode;
       var inFocus = !focusSet || focusSet.has(id);
       var res = findFunc(id);
       var manuallyHidden = !!(res && res.func.hidden);
-      node.style.display = (inFocus && !manuallyHidden) ? '' : 'none';
+      var allowedByFilter = !viewFilterUnits || (res && viewFilterUnits.has(res.containerId));
+      node.style.display = (inFocus && !manuallyHidden && allowedByFilter) ? '' : 'none';
     });
 
     world.querySelectorAll('.unit-diagram').forEach(function(sec){
+      var uid = sec.dataset.uid;
+      var allowedByFilter = !viewFilterUnits || viewFilterUnits.has(uid);
+      if(!allowedByFilter){ sec.style.display = 'none'; return; }
       var nodes = sec.querySelectorAll('.func-node');
       if(nodes.length === 0){ sec.style.display = ''; return; }
       var anyVisible = Array.prototype.some.call(nodes, function(n){ return n.style.display !== 'none'; });
@@ -1213,30 +1274,32 @@
   // touch work below — this is exactly what ran before tablet/phone support existed. ----
   function initPanZoomDesktop(){
     var wrap = document.getElementById('canvas-wrap');
+    var panState = null; // function-scoped so the double-click detector below can see it
 
     wrap.addEventListener('pointerdown', function(e){
-      if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
+      if(e.target.closest('.zoom-controls, .focus-bar')) return;
+      if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
       if(e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
-      var startX = e.clientX, startY = e.clientY;
-      var startViewX = view.x, startViewY = view.y;
-      var moved = false;
+      panState = { pointerId:e.pointerId, startX:e.clientX, startY:e.clientY, startViewX:view.x, startViewY:view.y, moved:false };
       try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
       wrap.classList.add('panning');
 
       function onMove(ev){
-        var dx = ev.clientX - startX, dy = ev.clientY - startY;
-        if(!moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) moved = true;
-        if(!moved) return;
-        view.x = startViewX + dx; view.y = startViewY + dy;
+        if(!panState || ev.pointerId !== panState.pointerId) return;
+        var dx = ev.clientX - panState.startX, dy = ev.clientY - panState.startY;
+        if(!panState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) panState.moved = true;
+        if(!panState.moved) return;
+        view.x = panState.startViewX + dx; view.y = panState.startViewY + dy;
         applyTransform();
       }
-      function onUp(){
-        try{ wrap.releasePointerCapture(e.pointerId); }catch(err){}
+      function onUp(ev){
+        try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
         wrap.classList.remove('panning');
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
-        if(moved) saveViewDebounced();
+        if(panState && panState.moved) saveViewDebounced();
+        panState = null;
       }
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
@@ -1249,11 +1312,28 @@
       zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
     }, { passive:false });
 
-    wrap.addEventListener('dblclick', function(e){
+    // Manual double-click detection (not the native dblclick event): preventDefault() on
+    // pointerdown — needed so dragging over a box still pans in Consultation mode —
+    // suppresses the browser's synthesized dblclick for that same interaction, so a plain
+    // click-timing check is used instead. Pointer capture also redirects e.target on
+    // pointerup to the capturing element, so elementFromPoint finds the real target.
+    // Registered here (before onUp attaches on each pointerdown) so it reliably runs first.
+    var lastClick = { time:0, id:null };
+    document.addEventListener('pointerup', function(e){
+      var panMoved = !!(panState && panState.pointerId === e.pointerId && panState.moved);
       if(view.mode !== 'view') return;
-      var target = e.target.closest('[data-fid]');
-      if(!target) return;
-      enterFocus(target.dataset.fid);
+      if(panMoved){ lastClick = { time:0, id:null }; return; }
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var target = el ? el.closest('[data-fid]') : null;
+      if(!target){ lastClick = { time:0, id:null }; return; }
+      var now = Date.now();
+      var fid = target.dataset.fid;
+      if(lastClick.id === fid && (now - lastClick.time) < 400){
+        enterFocus(fid);
+        lastClick = { time:0, id:null };
+      } else {
+        lastClick = { time:now, id:fid };
+      }
     });
 
     applyTransform();
@@ -1337,6 +1417,30 @@
       }
     });
 
+    // Double-tap isolates a function in Consultation mode — touch doesn't reliably
+    // synthesize a native dblclick, so this is detected manually. Pointer capture (set
+    // above so a drag starting on a box still pans) redirects e.target on pointerup to
+    // the capturing element, so elementFromPoint is used to find what's really underneath.
+    // Registered before the pan-ending listener below so panState/pinchState can still be
+    // read here before that listener clears them.
+    var lastTap = { time:0, id:null };
+    document.addEventListener('pointerup', function(e){
+      if(view.mode !== 'view') return;
+      if(pinchState){ lastTap = { time:0, id:null }; return; }
+      if(panState && panState.pointerId === e.pointerId && panState.moved){ lastTap = { time:0, id:null }; return; }
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var target = el ? el.closest('[data-fid]') : null;
+      if(!target){ lastTap = { time:0, id:null }; return; }
+      var now = Date.now();
+      var fid = target.dataset.fid;
+      if(lastTap.id === fid && (now - lastTap.time) < 400){
+        enterFocus(fid);
+        lastTap = { time:0, id:null };
+      } else {
+        lastTap = { time:now, id:fid };
+      }
+    });
+
     document.addEventListener('pointerup', onEnd);
     document.addEventListener('pointercancel', onEnd);
     function onEnd(ev){
@@ -1361,23 +1465,6 @@
         }
       }
     }
-
-    // Double-tap isolates a function in Consultation mode — touch doesn't reliably
-    // synthesize a native dblclick, so this is detected manually.
-    var lastTap = { time:0, id:null };
-    document.addEventListener('pointerup', function(e){
-      if(view.mode !== 'view') return;
-      var target = e.target.closest('[data-fid]');
-      if(!target){ lastTap = { time:0, id:null }; return; }
-      var now = Date.now();
-      var fid = target.dataset.fid;
-      if(lastTap.id === fid && (now - lastTap.time) < 400){
-        enterFocus(fid);
-        lastTap = { time:0, id:null };
-      } else {
-        lastTap = { time:now, id:fid };
-      }
-    });
 
     applyTransform();
   }
@@ -1420,7 +1507,8 @@
 
   // ---- Whole-project download / import (portable backup, restores everything) ----
   function exportStateFile(){
-    var json = JSON.stringify(state, null, 2);
+    var payload = Object.assign({}, state, { arrowWidth: view.arrowWidth, textScale: view.textScale });
+    var json = JSON.stringify(payload, null, 2);
     var blob = new Blob([json], { type:'application/json' });
     saveFile('analyse-descendante.json', blob).then(function(ok){
       if(!ok) alert('Le téléchargement a été annulé ou n’est pas disponible ici.');
@@ -1436,8 +1524,13 @@
       if(!migrated){ alert('Ce fichier ne correspond pas au format attendu.'); return; }
       if(!confirm('Remplacer l’analyse actuelle par le contenu de ce fichier ?')) return;
       state = migrated;
+      viewFilterUnits = null;
+      collapsedSidebarSections.clear();
+      if(typeof parsed.arrowWidth === 'number') view.arrowWidth = clampNum(parsed.arrowWidth, 0, 10);
+      if(typeof parsed.textScale === 'number') view.textScale = clampNum(parsed.textScale, 0, 20);
       funcForm = null;
-      saveState();
+      saveState(); saveViewDebounced();
+      syncArrowWidthInputs(); syncTextScaleInputs(); applyDisplaySettings();
       render();
     };
     reader.onerror = function(){ alert('Erreur de lecture du fichier.'); };
@@ -1561,18 +1654,37 @@
         setTimeout(layoutAndDraw, 260);
         return;
       case 'toggle-theme': toggleTheme(); return;
-      case 'mode-edit': setMode('edit'); return;
-      case 'mode-view': setMode('view'); return;
+      case 'toggle-dropdown': {
+        var ddId = 'dropdown-' + t.dataset.dropdownTarget;
+        var ddMenu = document.getElementById(ddId);
+        if(!ddMenu) return;
+        var wasHidden = ddMenu.hidden;
+        document.querySelectorAll('.dropdown-menu').forEach(function(m){ m.hidden = true; });
+        ddMenu.hidden = !wasHidden;
+        if(!ddMenu.hidden){
+          var btnRect = t.getBoundingClientRect();
+          var menuWidth = Math.min(320, window.innerWidth * 0.8);
+          var left = Math.min(Math.max(8, btnRect.right - menuWidth), window.innerWidth - menuWidth - 8);
+          ddMenu.style.top = (btnRect.bottom + 6) + 'px';
+          ddMenu.style.left = left + 'px';
+          if(ddId === 'dropdown-view-options') renderViewOptionsPanel();
+        }
+        return;
+      }
       case 'exit-focus': exitFocus(); return;
       case 'reset-all':
         if(confirm('Tout effacer ? Cette action est irréversible.')) resetAll();
         return;
-      case 'export-image': exportImage(); return;
-      case 'export-pdf': exportPDF(); return;
       case 'export-state': exportStateFile(); return;
       case 'zoom-in': { var r=document.getElementById('canvas-wrap').getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1.2); return; }
       case 'zoom-out': { var r2=document.getElementById('canvas-wrap').getBoundingClientRect(); zoomAt(r2.width/2, r2.height/2, 1/1.2); return; }
       case 'reset-view': resetView(); return;
+      case 'toggle-sidebar-collapse': {
+        var cid = t.dataset.uid;
+        if(collapsedSidebarSections.has(cid)) collapsedSidebarSections.delete(cid); else collapsedSidebarSections.add(cid);
+        renderSidebar();
+        return;
+      }
       case 'add-unit': addUnit(); return;
       case 'delete-unit':
         if(confirm('Supprimer cette unité et toutes ses fonctions ?')) deleteUnit(t.dataset.uid);
@@ -1614,6 +1726,15 @@
   document.addEventListener('change', function(e){
     var t = e.target;
     if(!t.dataset) return;
+    if(t.dataset.action === 'mode-select'){ setMode(t.value); return; }
+    if(t.dataset.action === 'export-select'){
+      if(t.value === 'image') exportImage();
+      else if(t.value === 'pdf') exportPDF();
+      t.selectedIndex = 0;
+      return;
+    }
+    if(t.dataset.action === 'toggle-show-arrows'){ view.showArrows = t.checked; saveViewDebounced(); drawConnectors(); return; }
+    if(t.dataset.action === 'toggle-unit-filter'){ toggleUnitFilter(t.dataset.uid); renderViewOptionsPanel(); return; }
     if(t.dataset.action === 'main-call'){
       var id = t.dataset.fid;
       if(t.checked){ if(state.main.calls.indexOf(id)===-1) state.main.calls.push(id); }
@@ -1625,6 +1746,12 @@
       var fid = t.dataset.fid;
       if(t.checked) funcForm.calls.add(fid); else funcForm.calls.delete(fid);
       return;
+    }
+  });
+
+  document.addEventListener('click', function(e){
+    if(!e.target.closest('.dropdown')){
+      document.querySelectorAll('.dropdown-menu').forEach(function(m){ m.hidden = true; });
     }
   });
 
@@ -1647,9 +1774,8 @@
   applyDisplaySettings();
 
   document.getElementById('app').classList.toggle('mode-view', view.mode === 'view');
-  document.querySelectorAll('.mode-btn').forEach(function(b){
-    b.dataset.active = (b.dataset.action === 'mode-'+view.mode) ? 'true' : 'false';
-  });
+  var modeSelectInit = document.querySelector('.mode-select');
+  if(modeSelectInit) modeSelectInit.value = view.mode;
   if(view.mode === 'view'){ document.getElementById('app').classList.add('sidebar-collapsed'); }
 
   initTheme();
