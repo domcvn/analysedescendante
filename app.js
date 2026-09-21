@@ -1169,23 +1169,29 @@
   }
 
   // ---- Sidebar resize (drag the handle between the panel and the canvas) ----
+  function clampSidebarWidth(w){
+    var isMobile = window.innerWidth <= 900;
+    var minW = isMobile ? 200 : 260;
+    var maxW = isMobile ? Math.min(window.innerWidth * 0.92, 420) : Math.min(720, window.innerWidth * 0.7);
+    return Math.max(minW, Math.min(maxW, w));
+  }
   function initSidebarResize(){
     var handle = document.getElementById('sidebar-resize-handle');
     var sidebar = document.getElementById('sidebar');
     if(!handle || !sidebar) return;
     handle.addEventListener('pointerdown', function(e){
-      if(e.button !== undefined && e.button !== 0) return;
+      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
       var startX = e.clientX;
       var startW = sidebar.getBoundingClientRect().width;
-      var minW = 260, maxW = Math.min(720, window.innerWidth * 0.7);
       try{ handle.setPointerCapture(e.pointerId); }catch(err){}
       handle.classList.add('resizing');
 
       function onMove(ev){
-        var w = Math.max(minW, Math.min(maxW, startW + (ev.clientX - startX)));
+        var w = clampSidebarWidth(startW + (ev.clientX - startX));
         sidebar.style.width = w + 'px';
         view.sidebarWidth = w;
+        if(window.innerWidth <= 900) handle.style.left = w + 'px';
         scheduleLayout();
       }
       function onUp(){
@@ -1226,7 +1232,8 @@
     }
 
     wrap.addEventListener('pointerdown', function(e){
-      if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
+      if(e.target.closest('.zoom-controls, .focus-bar')) return;
+      if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
       if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
       deselectTouchArmed();
@@ -1502,6 +1509,11 @@
     var a = t.dataset.action;
     switch(a){
       case 'toggle-sidebar': document.getElementById('app').classList.toggle('sidebar-collapsed'); scheduleLayout(); return;
+      case 'toggle-topbar':
+        document.getElementById('app').classList.toggle('topbar-collapsed');
+        scheduleLayout();
+        setTimeout(layoutAndDraw, 260);
+        return;
       case 'toggle-theme': toggleTheme(); return;
       case 'mode-edit': setMode('edit'); return;
       case 'mode-view': setMode('view'); return;
@@ -1597,7 +1609,12 @@
   initTheme();
   initPanZoom();
   var sidebarEl = document.getElementById('sidebar');
-  if(sidebarEl) sidebarEl.style.width = view.sidebarWidth + 'px';
+  var sidebarHandleEl = document.getElementById('sidebar-resize-handle');
+  if(sidebarEl){
+    var appliedW = clampSidebarWidth(view.sidebarWidth);
+    sidebarEl.style.width = appliedW + 'px';
+    if(sidebarHandleEl && window.innerWidth <= 900) sidebarHandleEl.style.left = appliedW + 'px';
+  }
   initSidebarResize();
   render();
 })();
