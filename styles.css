@@ -64,11 +64,6 @@
     display:flex; align-items:center; gap:10px; flex-wrap:wrap;
     padding: calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
     background:var(--surface); border-bottom:1px solid var(--border); z-index:20;
-    max-height:260px; overflow-x:hidden; overflow-y:hidden;
-    transition:max-height .22s ease, padding-top .22s ease, padding-bottom .22s ease, border-color .22s ease;
-  }
-  #app.topbar-collapsed header.topbar{
-    max-height:0; padding-top:0; padding-bottom:0; border-bottom-color:transparent;
   }
   .topbar-toggle{ display:none; }
   .brand{ display:flex; flex-direction:column; gap:1px; margin-right:auto; min-width:0; }
@@ -135,7 +130,7 @@
   #sidebar{
     flex:0 0 auto; width:380px; min-width:260px; max-width:min(70vw, 720px);
     background:var(--surface); border-right:1px solid var(--border);
-    overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; touch-action:pan-y;
+    overflow-y:auto; overflow-x:hidden;
     padding:16px 16px calc(24px + env(safe-area-inset-bottom,0px));
     display:flex; flex-direction:column; gap:18px; min-height:0;
   }
@@ -348,18 +343,22 @@
       position:fixed; top:0; left:0; bottom:0;
       padding-top: calc(64px + env(safe-area-inset-top,0px));
       width:88%; max-width:360px; z-index:18; box-shadow:var(--shadow-2);
+      -webkit-overflow-scrolling:touch; touch-action:pan-y;
     }
-    .sidebar-resize-handle{
-      position:fixed; top:0; bottom:0; left:min(88vw, 360px); width:14px; z-index:19;
-    }
-    #app.sidebar-collapsed .sidebar-resize-handle{ display:none; }
+    .sidebar-resize-handle{ display:none; }
     #app:not(.sidebar-collapsed)::after{ content:''; position:fixed; inset:0; background:rgba(10,12,20,.35); z-index:16; }
     #app.mode-view::after{ display:none; }
     .label-desktop{ display:none; }
     .brand p{ display:none; }
+
     header.topbar{
       flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden;
       -webkit-overflow-scrolling:touch; touch-action:pan-x;
+      max-height:260px;
+      transition:max-height .22s ease, padding-top .22s ease, padding-bottom .22s ease, border-color .22s ease;
+    }
+    #app.topbar-collapsed header.topbar{
+      max-height:0; padding-top:0; padding-bottom:0; border-bottom-color:transparent;
     }
     header.topbar > *{ flex-shrink:0; }
     .topbar-actions{ flex-wrap:nowrap; }

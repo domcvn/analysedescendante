@@ -1,6 +1,11 @@
 (function(){
   "use strict";
 
+  // Decided once, at load: is this device's primary pointer touch (phone/tablet) or a
+  // precise pointer (mouse/trackpad/pen)? Every interaction branches on this single flag
+  // rather than per-event checks, so desktop and touch never share a code path.
+  var IS_TOUCH_PRIMARY = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
   var STORAGE_KEY = 'adesc_state_v5';
   var VIEW_KEY = 'adesc_view_v2';
   var THEME_KEY = 'adesc_theme';
@@ -1018,9 +1023,9 @@
   function makeDraggable(handleEl, movedEl, onMove, onEnd, getBounds, resolveCollision){
     handleEl.addEventListener('pointerdown', function(e){
       if(view.mode !== 'edit') return;
-      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
+      if(!(IS_TOUCH_PRIMARY && e.pointerType === 'touch') && e.button !== undefined && e.button !== 0) return;
 
-      if(e.pointerType === 'touch'){
+      if(IS_TOUCH_PRIMARY && e.pointerType === 'touch'){
         var armKey = movedEl.classList.contains('main-box') ? '__main__' : (movedEl.dataset.uid || movedEl.dataset.fnode);
         if(armedElId !== armKey){
           e.preventDefault();
@@ -1170,9 +1175,7 @@
 
   // ---- Sidebar resize (drag the handle between the panel and the canvas) ----
   function clampSidebarWidth(w){
-    var isMobile = window.innerWidth <= 900;
-    var minW = isMobile ? 200 : 260;
-    var maxW = isMobile ? Math.min(window.innerWidth * 0.92, 420) : Math.min(720, window.innerWidth * 0.7);
+    var minW = 260, maxW = Math.min(720, window.innerWidth * 0.7);
     return Math.max(minW, Math.min(maxW, w));
   }
   function initSidebarResize(){
@@ -1180,7 +1183,7 @@
     var sidebar = document.getElementById('sidebar');
     if(!handle || !sidebar) return;
     handle.addEventListener('pointerdown', function(e){
-      if(e.pointerType !== 'touch' && e.button !== undefined && e.button !== 0) return;
+      if(e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
       var startX = e.clientX;
       var startW = sidebar.getBoundingClientRect().width;
@@ -1191,7 +1194,6 @@
         var w = clampSidebarWidth(startW + (ev.clientX - startX));
         sidebar.style.width = w + 'px';
         view.sidebarWidth = w;
-        if(window.innerWidth <= 900) handle.style.left = w + 'px';
         scheduleLayout();
       }
       function onUp(){
@@ -1207,11 +1209,64 @@
   }
 
   // ---- Canvas panning (background drag) ----
-  function initPanZoom(){
+  // ---- Desktop / mouse / pen: the original pan+zoom logic, untouched by any of the
+  // touch work below — this is exactly what ran before tablet/phone support existed. ----
+  function initPanZoomDesktop(){
     var wrap = document.getElementById('canvas-wrap');
-    var activePointers = {}; // touch only: pointerId -> {x,y}, tracks fingers on empty canvas / (view mode) boxes
-    var panState = null;     // pan in progress (mouse/pen, or single-finger touch)
-    var pinchState = null;   // two-finger pinch-zoom in progress (touch only)
+
+    wrap.addEventListener('pointerdown', function(e){
+      if(e.target.closest('.unit-diagram, .func-node, .main-box, .zoom-controls, .focus-bar')) return;
+      if(e.button !== undefined && e.button !== 0) return;
+      e.preventDefault();
+      var startX = e.clientX, startY = e.clientY;
+      var startViewX = view.x, startViewY = view.y;
+      var moved = false;
+      try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
+      wrap.classList.add('panning');
+
+      function onMove(ev){
+        var dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if(!moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) moved = true;
+        if(!moved) return;
+        view.x = startViewX + dx; view.y = startViewY + dy;
+        applyTransform();
+      }
+      function onUp(){
+        try{ wrap.releasePointerCapture(e.pointerId); }catch(err){}
+        wrap.classList.remove('panning');
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        if(moved) saveViewDebounced();
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
+
+    wrap.addEventListener('wheel', function(e){
+      e.preventDefault();
+      var rect = wrap.getBoundingClientRect();
+      var factor = e.deltaY < 0 ? 1.1 : (1/1.1);
+      zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+    }, { passive:false });
+
+    wrap.addEventListener('dblclick', function(e){
+      if(view.mode !== 'view') return;
+      var target = e.target.closest('[data-fid]');
+      if(!target) return;
+      enterFocus(target.dataset.fid);
+    });
+
+    applyTransform();
+  }
+
+  // ---- Touch (phones/tablets): one finger pans, two fingers pinch-zoom, double-tap
+  // isolates a function in Consultation mode. Entirely separate code path from desktop —
+  // only ever initialized when the device's primary pointer is touch. ----
+  function initPanZoomTouch(){
+    var wrap = document.getElementById('canvas-wrap');
+    var activePointers = {}; // pointerId -> {x,y}
+    var panState = null;
+    var pinchState = null;
 
     function dist(p1, p2){ return Math.hypot(p1.x-p2.x, p1.y-p2.y); }
     function mid(p1, p2){ return { x:(p1.x+p2.x)/2, y:(p1.y+p2.y)/2 }; }
@@ -1232,42 +1287,30 @@
 
     wrap.addEventListener('pointerdown', function(e){
       if(e.target.closest('.zoom-controls, .focus-bar')) return;
-
-      // ---- Touch: one finger pans, two fingers pinch-zoom. In Consultation mode this
-      // may start on a unit/function box too (nothing there is draggable); in Édition,
-      // boxes are left to the tap-then-drag handling instead. ----
-      if(e.pointerType === 'touch'){
-        if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
-        e.preventDefault();
-        deselectTouchArmed();
-        activePointers[e.pointerId] = { x:e.clientX, y:e.clientY };
-        try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
-        var ids = Object.keys(activePointers);
-        if(ids.length === 1){
-          panState = null; pinchState = null;
-          startPan(e.pointerId, e.clientX, e.clientY);
-          wrap.classList.add('panning');
-        } else if(ids.length === 2){
-          panState = null;
-          wrap.classList.remove('panning');
-          startPinch();
-        }
-        return;
-      }
-
-      // ---- Mouse / pen: unchanged, original single-pointer pan — boxes always excluded
-      // (dragging them is makeDraggable's job), no mode-dependent behavior at all. ----
-      if(e.target.closest('.unit-diagram, .func-node, .main-box')) return;
-      if(e.button !== undefined && e.button !== 0) return;
+      // In Édition, a finger landing on a box is left to the tap-then-drag handling
+      // instead; in Consultation, nothing is draggable, so pan/pinch may start anywhere.
+      if(view.mode === 'edit' && e.target.closest('.unit-diagram, .func-node, .main-box')) return;
       e.preventDefault();
+      deselectTouchArmed();
+      activePointers[e.pointerId] = { x:e.clientX, y:e.clientY };
       try{ wrap.setPointerCapture(e.pointerId); }catch(err){}
-      startPan(e.pointerId, e.clientX, e.clientY);
-      wrap.classList.add('panning');
+      var ids = Object.keys(activePointers);
+      if(ids.length === 1){
+        panState = null; pinchState = null;
+        startPan(e.pointerId, e.clientX, e.clientY);
+        wrap.classList.add('panning');
+      } else if(ids.length === 2){
+        panState = null;
+        wrap.classList.remove('panning');
+        startPinch();
+      }
     });
 
     document.addEventListener('pointermove', function(ev){
-      if(ev.pointerType === 'touch' && pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
-        activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
+      if(!(ev.pointerId in activePointers)) return;
+      activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
+
+      if(pinchState){
         var p1 = activePointers[pinchState.id1], p2 = activePointers[pinchState.id2];
         if(!p1 || !p2) return;
         var newDist = dist(p1, p2);
@@ -1286,7 +1329,6 @@
         return;
       }
       if(panState && ev.pointerId === panState.pointerId){
-        if(ev.pointerType === 'touch') activePointers[ev.pointerId] = { x:ev.clientX, y:ev.clientY };
         var dx = ev.clientX - panState.startX, dy = ev.clientY - panState.startY;
         if(!panState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) panState.moved = true;
         if(!panState.moved) return;
@@ -1295,49 +1337,33 @@
       }
     });
 
-    document.addEventListener('pointerup', onPointerEnd);
-    document.addEventListener('pointercancel', onPointerEnd);
-    function onPointerEnd(ev){
-      if(ev.pointerType === 'touch'){
-        if(!(ev.pointerId in activePointers)) return;
-        delete activePointers[ev.pointerId];
-        try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
-        var ids = Object.keys(activePointers);
-        if(panState && ev.pointerId === panState.pointerId){
-          wrap.classList.remove('panning');
-          if(panState.moved) saveViewDebounced();
-          panState = null;
-        }
-        if(pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
-          saveViewDebounced();
-          pinchState = null;
-          if(ids.length === 1){
-            // one finger remains on screen: resume panning from here instead of jumping
-            var p = activePointers[ids[0]];
-            startPan(+ids[0], p.x, p.y);
-            panState.moved = true;
-            wrap.classList.add('panning');
-          }
-        }
-        return;
-      }
-      // mouse / pen
-      if(!panState || ev.pointerId !== panState.pointerId) return;
+    document.addEventListener('pointerup', onEnd);
+    document.addEventListener('pointercancel', onEnd);
+    function onEnd(ev){
+      if(!(ev.pointerId in activePointers)) return;
+      delete activePointers[ev.pointerId];
       try{ wrap.releasePointerCapture(ev.pointerId); }catch(err){}
-      wrap.classList.remove('panning');
-      if(panState.moved) saveViewDebounced();
-      panState = null;
+      var ids = Object.keys(activePointers);
+      if(panState && ev.pointerId === panState.pointerId){
+        wrap.classList.remove('panning');
+        if(panState.moved) saveViewDebounced();
+        panState = null;
+      }
+      if(pinchState && (ev.pointerId === pinchState.id1 || ev.pointerId === pinchState.id2)){
+        saveViewDebounced();
+        pinchState = null;
+        if(ids.length === 1){
+          // one finger remains on screen: resume panning from here instead of jumping
+          var p = activePointers[ids[0]];
+          startPan(+ids[0], p.x, p.y);
+          panState.moved = true;
+          wrap.classList.add('panning');
+        }
+      }
     }
 
-    wrap.addEventListener('wheel', function(e){
-      e.preventDefault();
-      var rect = wrap.getBoundingClientRect();
-      var factor = e.deltaY < 0 ? 1.1 : (1/1.1);
-      zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
-    }, { passive:false });
-
-    // Double-click (mouse) and double-tap (touch) both isolate a function via the same
-    // pointerup-based detector — touch doesn't reliably synthesize a native dblclick.
+    // Double-tap isolates a function in Consultation mode — touch doesn't reliably
+    // synthesize a native dblclick, so this is detected manually.
     var lastTap = { time:0, id:null };
     document.addEventListener('pointerup', function(e){
       if(view.mode !== 'view') return;
@@ -1627,7 +1653,7 @@
   if(view.mode === 'view'){ document.getElementById('app').classList.add('sidebar-collapsed'); }
 
   initTheme();
-  initPanZoom();
+  if(IS_TOUCH_PRIMARY){ initPanZoomTouch(); } else { initPanZoomDesktop(); }
   var sidebarEl = document.getElementById('sidebar');
   var sidebarHandleEl = document.getElementById('sidebar-resize-handle');
   if(sidebarEl){
