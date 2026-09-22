@@ -87,7 +87,23 @@
   }
 
   #app.mode-view .edit-only{ display:none !important; }
-  #app.mode-view #sidebar{ display:none; }
+  /* Consultation mode: the sidebar stays visible and readable, but nothing in it can be
+     edited — inputs/textareas become inert display text, and every button that adds,
+     removes, or reorders something disappears. The collapse toggles (▾/▸) and the
+     read-only "Détails" view stay active, since those are just reading aids. */
+  #app.mode-view #sidebar input,
+  #app.mode-view #sidebar textarea{
+    pointer-events:none; background:transparent; border-color:transparent; resize:none;
+  }
+  #app.mode-view #sidebar input[type="checkbox"]{ opacity:.8; }
+  #app.mode-view #sidebar .swatch{ pointer-events:none; cursor:default; }
+  #app.mode-view #sidebar button[data-action="add-unit"],
+  #app.mode-view #sidebar button[data-action="delete-unit"],
+  #app.mode-view #sidebar .add-func-btn,
+  #app.mode-view #sidebar .func-list-actions,
+  #app.mode-view #sidebar .func-drag-handle{
+    display:none !important;
+  }
   .view-only{ display:none; }
   #app.mode-view .view-only{ display:inline-flex; }
 
@@ -158,7 +174,6 @@
   }
   .sidebar-resize-handle:hover::after, .sidebar-resize-handle.resizing::after{ opacity:1; background:var(--accent); }
   #app.sidebar-collapsed .sidebar-resize-handle{ display:none; }
-  #app.mode-view .sidebar-resize-handle{ display:none; }
 
   .side-section{ display:flex; flex-direction:column; gap:10px; min-width:0; }
   .side-section h2{ font-size:13px; margin:0; font-weight:600; color:var(--ink); display:flex; align-items:center; gap:4px; }
@@ -360,7 +375,6 @@
     }
     .sidebar-resize-handle{ display:none; }
     #app:not(.sidebar-collapsed)::after{ content:''; position:fixed; inset:0; background:rgba(10,12,20,.35); z-index:16; }
-    #app.mode-view::after{ display:none; }
     .label-desktop{ display:none; }
     .brand p{ display:none; }
 

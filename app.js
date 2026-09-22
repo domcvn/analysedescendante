@@ -159,6 +159,25 @@
   }
   function getContainer(containerId){ return containerId === '__main__' ? state.main : getUnit(containerId); }
   function allContainers(){ return [state.main].concat(state.units); }
+  function computeAnchorDegrees(){
+    var out = {}, incoming = {};
+    function bump(map, id){ map[id] = (map[id]||0) + 1; }
+    state.main.calls.forEach(function(fid){ bump(out, '__main__'); bump(incoming, fid); });
+    allContainers().forEach(function(c){
+      c.functions.forEach(function(f){
+        f.calls.forEach(function(cid){ bump(out, f.id); bump(incoming, cid); });
+      });
+    });
+    return { out: out, incoming: incoming };
+  }
+  // How wide a box needs to be so every arrow anchored to it (per nextOffset's spacing
+  // formula below) still lands within its own edge, instead of spilling out past a narrow
+  // box where anchors would bunch together or overshoot into a neighboring element.
+  function anchorMinWidth(degree){
+    if(degree <= 1) return 0;
+    var spacing = Math.max(18, view.arrowWidth * 5);
+    return (degree - 1) * spacing + 50;
+  }
   function findFunc(id){
     for(var j=0;j<state.main.functions.length;j++){
       if(state.main.functions[j].id===id) return { func:state.main.functions[j], containerId:'__main__' };
@@ -509,22 +528,29 @@
   }
 
   // ---- Canvas rendering ----
-  function renderFuncNode(f){
+  function renderFuncNode(f, degrees){
     var hasIn = f.inputs && f.inputs.trim();
     var hasOut = f.outputs && f.outputs.trim();
     var inHtml = hasIn ? ('<div class="io io-in">'+esc(f.inputs.trim()).replace(/\n/g,'<br>')+'</div><div class="arrow">→</div>') : '';
     var outHtml = hasOut ? ('<div class="arrow">→</div><div class="io io-out">'+esc(f.outputs.trim()).replace(/\n/g,'<br>')+'</div>') : '';
+    var degree = Math.max((degrees.out[f.id]||0), (degrees.incoming[f.id]||0));
+    var minW = anchorMinWidth(degree);
+    var boxStyle = minW ? ' style="min-width:'+minW+'px"' : '';
     return '<div class="func-node" data-fnode="'+f.id+'" style="left:'+f.x+'px;top:'+f.y+'px">'+
-      inHtml+'<div class="func-box" data-fid="'+f.id+'">'+esc(f.name)+'</div>'+outHtml+
+      inHtml+'<div class="func-box" data-fid="'+f.id+'"'+boxStyle+'>'+esc(f.name)+'</div>'+outHtml+
     '</div>';
   }
 
   function renderCanvas(){
     var world = document.getElementById('canvas-world');
     var html = '';
+    var degrees = computeAnchorDegrees();
 
-    html += '<div class="main-box" data-fid="__main__" style="left:'+state.main.x+'px;top:'+state.main.y+'px">'+esc(state.main.name || 'Programme')+'</div>';
-    state.main.functions.forEach(function(f){ html += renderFuncNode(f); });
+    var mainDegree = Math.max((degrees.out['__main__']||0), (degrees.incoming['__main__']||0));
+    var mainMinW = anchorMinWidth(mainDegree);
+    var mainStyle = 'left:'+state.main.x+'px;top:'+state.main.y+'px'+(mainMinW ? ';min-width:'+mainMinW+'px' : '');
+    html += '<div class="main-box" data-fid="__main__" style="'+mainStyle+'">'+esc(state.main.name || 'Programme')+'</div>';
+    state.main.functions.forEach(function(f){ html += renderFuncNode(f, degrees); });
 
     state.units.forEach(function(u){
       html += '<section class="unit-diagram" data-uid="'+u.id+'" style="left:'+u.x+'px;top:'+u.y+'px;--u-bg:'+u.color.bg+';--u-border:'+u.color.border+'">';
@@ -533,7 +559,7 @@
       if(u.functions.length===0){
         html += '<p class="hint small unit-empty-hint">Aucune fonction.</p>';
       } else {
-        u.functions.forEach(function(f){ html += renderFuncNode(f); });
+        u.functions.forEach(function(f){ html += renderFuncNode(f, degrees); });
       }
       html += '</div>';
       if(view.mode === 'edit'){
@@ -707,6 +733,31 @@
     var clearance = Math.max(14*renderScale, leg*0.7);
     var candidates = [];
 
+    // How far can we actually drop straight down from the source (or rise straight up into
+    // the target) before entering the next "row" of obstacles — checked across every column,
+    // not just the source/target's own. The swing's horizontal segments travel across
+    // whatever columns lie between source and target, so a dive depth that's only safe in
+    // the source's own column can still land inside another column's obstacle once the
+    // horizontal leg reaches that far — exactly what let arrows cut through a box in a
+    // multi-column diagram. A global check is a strict superset of a column-specific one,
+    // so it's never less safe, only ever more conservative when that's actually required.
+    function diveLimitBelow(y, obstacles){
+      var limit = Infinity;
+      obstacles.forEach(function(o){
+        if(o.top >= y-0.5) limit = Math.min(limit, o.top);
+      });
+      return limit;
+    }
+    function diveLimitAbove(y, obstacles){
+      var limit = -Infinity;
+      obstacles.forEach(function(o){
+        if(o.top+o.height <= y+0.5) limit = Math.max(limit, o.top+o.height);
+      });
+      return limit;
+    }
+    var belowLimit = diveLimitBelow(s.y, boxObstacles);
+    var aboveLimit = diveLimitAbove(t.y, boxObstacles);
+
     if(t.y >= s.y){
       var span = t.y - s.y;
       // Scan the whole span, not just a handful of fixed fractions, so there is a real
@@ -717,59 +768,127 @@
       }
       candidates.push([ [s.x,s.y],[s.x, s.y+clearance],[t.x, s.y+clearance],[t.x,t.y] ]);
       candidates.push([ [s.x,s.y],[s.x, t.y-clearance],[t.x, t.y-clearance],[t.x,t.y] ]);
+
+      // A wide, multi-column diagram can have several distinct "rows" of obstacles between
+      // source and target (one per unit/row of functions), each blocking a different span
+      // of X — no single sideways swing necessarily clears all of them at once. But the gap
+      // between two such rows is obstacle-free across the *entire* width, so a simple
+      // two-bend path landing exactly in one needs no sideways swing at all. A fixed-
+      // fraction scan can straddle right over a narrow gap; targeting each obstacle's own
+      // edges (within the span) finds it directly.
+      // Gaps between existing arrows matter here too, not just boxes — otherwise the swing
+      // position is chosen with no better-than-random chance of also dodging a busy
+      // diagram's other arrows, and nearly every edge falls back to the collision-scored
+      // pick instead of a genuinely clear one.
+      var midYSeen = {};
+      boxObstacles.concat(pathObstacles).forEach(function(o){
+        [o.top - clearance, o.top + o.height + clearance].forEach(function(midY){
+          if(midY <= s.y || midY >= t.y) return;
+          var key = Math.round(midY/6);
+          if(midYSeen[key]) return;
+          midYSeen[key] = true;
+          candidates.push([ [s.x,s.y],[s.x,midY],[t.x,midY],[t.x,t.y] ]);
+        });
+      });
     }
 
     // Try several detour heights: if the row just below the source (or just above the
     // target) happens to run straight through some other function (or another arrow),
     // a taller/shorter detour may clear it instead of forcing a wider sideways swing.
+    // Each is capped by belowLimit/aboveLimit above, so however small the real gap to the
+    // nearest same-column obstacle is, the dive itself never reaches into it.
     [1, 1.6, 2.2, 2.8, 3.4].forEach(function(legMult){
-      var belowY = s.y + leg*legMult;
-      var aboveY = t.y - leg*legMult;
+      var belowY = Math.min(s.y + leg*legMult, belowLimit - 2);
+      var aboveY = Math.max(t.y - leg*legMult, aboveLimit + 2);
+      if(belowY <= s.y) belowY = s.y + Math.min(2, Math.max(0.5, belowLimit - s.y - 1));
+      if(aboveY >= t.y) aboveY = t.y - Math.min(2, Math.max(0.5, t.y - aboveLimit - 1));
 
       // The column used to rise from below the source to above the target must clear every
-      // obstacle that sits in that vertical band — not just the source and target boxes —
-      // otherwise the rise can still cut across some other function/label in between.
+      // obstacle that sits in that vertical band — not just the source and target boxes, and
+      // not just other boxes at all: existing arrows in the band matter too, since a swing
+      // position chosen blind to them has no better-than-random chance of dodging them.
       var bandTop = Math.min(belowY, aboveY), bandBottom = Math.max(belowY, aboveY);
-      var relevant = boxObstacles.filter(function(o){ return o.top < bandBottom && o.top+o.height > bandTop; });
+      var relevantBoxes = boxObstacles.filter(function(o){ return o.top < bandBottom && o.top+o.height > bandTop; });
+      var relevantPaths = pathObstacles.filter(function(o){ return o.top < bandBottom && o.top+o.height > bandTop; });
+      var relevant = relevantBoxes.concat(relevantPaths);
       var minLeft = Math.min(sRect.left, tRect.left);
       var maxRight = Math.max(sRect.left+sRect.width, tRect.left+tRect.width);
-      relevant.forEach(function(o){
+      relevantBoxes.forEach(function(o){
         minLeft = Math.min(minLeft, o.left);
         maxRight = Math.max(maxRight, o.left+o.width);
       });
 
-      [1, 1.8, 2.6, 3.6].forEach(function(mult){
-        var cl = minLeft - clearance*mult, cr = maxRight + clearance*mult;
-        [cl, cr].sort(function(a,b){ return Math.abs(s.x-a)-Math.abs(s.x-b); }).forEach(function(clearX){
-          candidates.push([ [s.x,s.y],[s.x,belowY],[clearX,belowY],[clearX,aboveY],[t.x,aboveY],[t.x,t.y] ]);
-        });
+      // Try a position just past every relevant obstacle's own edge — this directly targets
+      // the narrow gaps between adjacent obstacles, which a uniform sweep across a wide
+      // range can straddle right over without ever landing in the one gap that matters.
+      // The uniform sweep is kept too, for coverage when the real gap isn't at any single
+      // obstacle's edge (e.g., clear space between two separated clusters). Positions are
+      // deduplicated to a coarse grid first — a dense stack can have many obstacles sharing
+      // nearly the same edge, and testing each one separately is pure wasted work.
+      var outerLeft = minLeft - clearance*8, outerRight = maxRight + clearance*8;
+      var xPositions = [], xSeen = {};
+      function pushX(x){
+        var key = Math.round(x/6);
+        if(xSeen[key]) return;
+        xSeen[key] = true;
+        xPositions.push(x);
+      }
+      pushX(outerLeft); pushX(outerRight);
+      relevant.forEach(function(o){
+        pushX(o.left - clearance);
+        pushX(o.left + o.width + clearance);
+      });
+
+      var SWEEP = 8;
+      for(var sp=0; sp<=SWEEP; sp++){
+        pushX(outerLeft + (outerRight-outerLeft)*(sp/SWEEP));
+      }
+      xPositions.forEach(function(clearX){
+        candidates.push([ [s.x,s.y],[s.x,belowY],[clearX,belowY],[clearX,aboveY],[t.x,aboveY],[t.x,t.y] ]);
       });
     });
 
     var boxClear = candidates.filter(function(c){ return !pathBlocked(c, boxObstacles); });
     var pool = boxClear.length ? boxClear : candidates;
 
-    // Only test the shortest handful for full arrow-avoidance — bounds the expensive checks
-    // to a fixed cost regardless of how many candidates exist, keeping big diagrams smooth.
     // Lengths are compared in renderScale-sized buckets (not exact pixels) so that tiny
     // sub-pixel differences between zoom levels never flip which candidate "wins" — ties
     // fall back to candidate-generation order, which is itself zoom-independent, so the
     // chosen route stays put while zooming instead of jumping between near-tied options.
     var lenBucket = Math.max(3, 6 * renderScale);
-    pool = pool.slice().sort(function(a,b){
+
+    // Check every box-clear candidate for arrow-clearance too, not just a short length-
+    // biased subset — with the much larger candidate pool generated above, the shortest few
+    // aren't guaranteed to include an arrow-clear option even when one exists further down.
+    var fullyClear = pool.filter(function(c){ return !pathBlocked(c, pathObstacles); });
+    if(fullyClear.length){
+      fullyClear.sort(function(a,b){
+        return Math.round(pathLength(a)/lenBucket) - Math.round(pathLength(b)/lenBucket);
+      });
+      return fullyClear[0];
+    }
+
+    // Nothing avoids every other arrow: pick whichever overlaps the LEAST with them (not
+    // just whichever is shortest). Bounded to a shortlist here — scoring sums overlap across
+    // every obstacle with no early exit, far pricier than the plain clear/blocked check
+    // above, and grows costly once many arrows have already been drawn. The shortlist mixes
+    // the shortest candidates with a spread across the rest of the pool, so a longer but
+    // much clearer option elsewhere isn't automatically excluded.
+    var byLength = pool.slice().sort(function(a,b){
       return Math.round(pathLength(a)/lenBucket) - Math.round(pathLength(b)/lenBucket);
     });
-    var shortlist = pool.slice(0, 18);
-
-    var fullyClear = shortlist.filter(function(c){ return !pathBlocked(c, pathObstacles); });
-    if(fullyClear.length) return fullyClear[0]; // already length-sorted
-
-    // Nothing in the shortlist fully avoids other arrows: pick whichever overlaps the LEAST
-    // with them (not just whichever is shortest), so any visible collision stays small.
-    // (Score each candidate once — recomputing inside the sort comparator is much costlier.)
+    var shortlist = byLength.slice(0, 24);
+    if(byLength.length > 24){
+      var stride = Math.max(1, Math.floor(byLength.length / 16));
+      for(var si=24; si<byLength.length; si+=stride) shortlist.push(byLength[si]);
+    }
     var scoreBucket = Math.max(3, 6 * renderScale);
     var scored = shortlist.map(function(c){ return { c:c, score:collisionScore(c, pathObstacles) }; });
-    scored.sort(function(a,b){ return Math.round(a.score/scoreBucket) - Math.round(b.score/scoreBucket); });
+    scored.sort(function(a,b){
+      var sd = Math.round(a.score/scoreBucket) - Math.round(b.score/scoreBucket);
+      if(sd !== 0) return sd;
+      return Math.round(pathLength(a.c)/lenBucket) - Math.round(pathLength(b.c)/lenBucket);
+    });
     return scored[0].c;
   }
 
@@ -925,10 +1044,8 @@
     deselectTouchArmed();
     if(mode === 'edit'){
       exitFocus();
-      document.getElementById('app').classList.remove('sidebar-collapsed');
     } else {
       funcForm = null;
-      document.getElementById('app').classList.add('sidebar-collapsed');
     }
     document.getElementById('app').classList.toggle('mode-view', mode === 'view');
     document.querySelectorAll('.dropdown-menu').forEach(function(m){ m.hidden = true; });
@@ -1663,10 +1780,9 @@
         ddMenu.hidden = !wasHidden;
         if(!ddMenu.hidden){
           var btnRect = t.getBoundingClientRect();
-          var menuWidth = Math.min(320, window.innerWidth * 0.8);
-          var left = Math.min(Math.max(8, btnRect.right - menuWidth), window.innerWidth - menuWidth - 8);
           ddMenu.style.top = (btnRect.bottom + 6) + 'px';
-          ddMenu.style.left = left + 'px';
+          ddMenu.style.left = 'auto';
+          ddMenu.style.right = Math.max(8, window.innerWidth - btnRect.right) + 'px';
           if(ddId === 'dropdown-view-options') renderViewOptionsPanel();
         }
         return;
@@ -1776,7 +1892,6 @@
   document.getElementById('app').classList.toggle('mode-view', view.mode === 'view');
   var modeSelectInit = document.querySelector('.mode-select');
   if(modeSelectInit) modeSelectInit.value = view.mode;
-  if(view.mode === 'view'){ document.getElementById('app').classList.add('sidebar-collapsed'); }
 
   initTheme();
   if(IS_TOUCH_PRIMARY){ initPanZoomTouch(); } else { initPanZoomDesktop(); }
